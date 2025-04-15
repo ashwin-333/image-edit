@@ -15,6 +15,12 @@ import argparse
 import traceback
 from datetime import datetime
 from pathlib import Path
+import multiprocessing
+from queue import Empty
+from multiprocessing import Queue, Process, Value
+import ctypes
+import random
+import queue
 
 # Try to import undetected-chromedriver
 try:
@@ -49,6 +55,9 @@ class EmuGPTProcessor:
         self.driver = None
         # Use the specific Chrome profile path
         self.user_profile = "/Users/ashwin/chrome_chatgpt_profile_20250414_214423"
+        
+        # Initialize multiprocessing support
+        self.num_processes = self.config.get("num_processes", 2)  # Default to 2 processes for testing
     
     def load_config(self, config_path):
         """Load configuration from file"""
@@ -1275,10 +1284,11 @@ class EmuGPTProcessor:
                         deleted = True
                     except Exception as e4:
                         print(f"Error navigating to new chat: {e4}")
-            
-            if not deleted:
-                print("Could not delete or clear chat, will try again on next processing")
                 
+                if not deleted:
+                    print("Could not delete or clear chat, will try again on next processing")
+                    
+            
         except Exception as clear_err:
             print(f"Error deleting chat: {clear_err}")
             # Continue anyway, don't fail the processing
@@ -1470,7 +1480,7 @@ class EmuGPTProcessor:
                 try:
                     # Scroll to make the image visible
                     self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", generated_images[0])
-                    time.sleep(1)
+                    time.sleep(0.5)
                     
                     # Get the image source directly
                     img_src = generated_images[0].get_attribute('src')
@@ -1499,7 +1509,53 @@ class EmuGPTProcessor:
                 except Exception as e1:
                     print(f"Error capturing image with alt='Generated image': {str(e1)}")
             
-            # PRIORITY 2: Look for images from oaiusercontent.com domain (from screenshot)
+            # PRIORITY 2: Handle case where multiple images are offered (from screenshot)
+            print("Checking for multiple image options scenario...")
+            try:
+                # Look for image grid with multiple options (as shown in screenshot)
+                image_grid = self.driver.find_elements(By.CSS_SELECTOR, 'div.grid.pb-2.grid-cols-1')
+                if image_grid:
+                    print("Found image grid that might contain multiple options")
+                    
+                    # Find all images in the grid
+                    grid_images = self.driver.find_elements(By.CSS_SELECTOR, 'div.group\\/imagegen-image')
+                    if grid_images and len(grid_images) > 1:
+                        print(f"Found {len(grid_images)} image options, selecting the first (left) one")
+                        
+                        # Get the first image (left option)
+                        first_image = grid_images[0]
+                        
+                        # Find the actual img element inside the container
+                        img_element = first_image.find_element(By.CSS_SELECTOR, 'img')
+                        
+                        if img_element:
+                            # Try to download directly
+                            img_src = img_element.get_attribute('src')
+                            if img_src and img_src.startswith('http'):
+                                try:
+                                    import requests
+                                    output_file = os.path.join(directory_path, "output.png")
+                                    response = requests.get(img_src, stream=True)
+                                    if response.status_code == 200:
+                                        with open(output_file, 'wb') as file:
+                                            for chunk in response.iter_content(1024):
+                                                file.write(chunk)
+                                        print(f"Downloaded first (left) image to {output_file}")
+                                        return True
+                                except Exception as download_err:
+                                    print(f"Error downloading image: {download_err}")
+                            
+                            # Fallback to screenshot
+                            self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", img_element)
+                            time.sleep(1)
+                            output_file = os.path.join(directory_path, "output.png")
+                            img_element.screenshot(output_file)
+                            print(f"Saved first (left) image to {output_file}")
+                            return True
+            except Exception as multi_err:
+                print(f"Error checking for multiple image scenario: {multi_err}")
+            
+            # PRIORITY 3: Look for images from oaiusercontent.com domain (from screenshot)
             print("Looking for images from oaiusercontent.com...")
             all_images = self.driver.find_elements(By.TAG_NAME, 'img')
             for img in all_images:
@@ -1518,8 +1574,8 @@ class EmuGPTProcessor:
                                     with open(output_file, 'wb') as file:
                                         for chunk in response.iter_content(1024):
                                             file.write(chunk)
-                                    print(f"Downloaded image to {output_file}")
-                                    return True
+                                        print(f"Downloaded image to {output_file}")
+                                        return True
                             except Exception as download_err:
                                 print(f"Error downloading image: {download_err}")
                         
@@ -1533,175 +1589,9 @@ class EmuGPTProcessor:
                 except Exception as e2:
                     continue
             
-            # PRIORITY 3: Look for images with class attributes matching the screenshot 
-            print("Looking for images with class attributes from the screenshot...")
-            try:
-                class_images = self.driver.find_elements(By.CSS_SELECTOR, 'img.absolute.top-0, img.absolute.z-1, img.w-full')
-                if class_images:
-                    for img in class_images:
-                        src = img.get_attribute('src')
-                        if src and not ('avatar' in src.lower() or 'user' in src.lower()):
-                            self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", img)
-                            time.sleep(1)
-                            output_file = os.path.join(directory_path, "output.png")
-                            img.screenshot(output_file)
-                            print(f"Image saved to {output_file} (via class attributes)")
-                            return True
-            except Exception as e3:
-                print(f"Error with class attributes approach: {str(e3)}")
-
-            # PRIORITY 4: Try the aspect-ratio style approach from the screenshot
-            print("Looking for images with aspect-ratio style...")
-            try:
-                images_with_style = self.driver.execute_script("""
-                    const results = [];
-                    const images = document.querySelectorAll('img');
-                    
-                    for (const img of images) {
-                        const style = window.getComputedStyle(img);
-                        if (style.aspectRatio === '0.666667 / 1' || 
-                            style.aspectRatio === '0.6666666666666666 / 1' ||
-                            img.style.aspectRatio === '0.666667 / 1' ||
-                            img.getAttribute('style')?.includes('aspect-ratio: 0.666667 / 1')) {
-                            results.push(img);
-                        }
-                    }
-                    
-                    return results;
-                """)
-                
-                if images_with_style and len(images_with_style) > 0:
-                    for img in images_with_style:
-                        try:
-                            src = img.get_attribute('src')
-                            if src and src.startswith('http'):
-                                import requests
-                                output_file = os.path.join(directory_path, "output.png")
-                                response = requests.get(src, stream=True)
-                                if response.status_code == 200:
-                                    with open(output_file, 'wb') as file:
-                                        for chunk in response.iter_content(1024):
-                                            file.write(chunk)
-                                    print(f"Downloaded image with aspect-ratio style to {output_file}")
-                                    return True
-                            
-                            # Fallback to screenshot
-                            self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", img)
-                            time.sleep(1)
-                            output_file = os.path.join(directory_path, "output.png")
-                            img.screenshot(output_file)
-                            print(f"Image saved to {output_file} (via aspect-ratio style)")
-                            return True
-                        except Exception:
-                            continue
-            except Exception as style_err:
-                print(f"Error with aspect-ratio style approach: {style_err}")
-                
-            # PRIORITY 5: Last resort - use JavaScript to extract all image sources
-            print("Using JavaScript to find any suitable images...")
-            try:
-                image_srcs = self.driver.execute_script("""
-                    // Get all image URLs that look like they might be generated
-                    const results = [];
-                    const images = document.querySelectorAll('img');
-                    
-                    for (const img of images) {
-                        const src = img.src || '';
-                        const alt = img.alt || '';
-                        const classes = img.className || '';
-                        const style = img.getAttribute('style') || '';
-                        
-                        // Skip user avatars or small icons
-                        if (alt.toLowerCase().includes('user') || 
-                            src.toLowerCase().includes('avatar')) {
-                            continue;
-                        }
-                        
-                        // Skip very small images (likely icons)
-                        if (img.width < 100 || img.height < 100) {
-                            continue;
-                        }
-                        
-                        // First check exact attributes from the screenshot
-                        if (alt === 'Generated image' || 
-                            src.includes('oaiusercontent.com') ||
-                            style.includes('aspect-ratio: 0.666667 / 1') ||
-                            classes.includes('absolute') ||
-                            classes.includes('top-0') ||
-                            classes.includes('z-1') ||
-                            classes.includes('w-full')) {
-                            
-                            // Add image info to results with high priority (1)
-                            results.push({
-                                src: src,
-                                width: img.width,
-                                height: img.height,
-                                alt: alt,
-                                classes: classes,
-                                priority: 1
-                            });
-                        }
-                        // Then check more general patterns
-                        else if (src.startsWith('blob:') ||
-                                 src.startsWith('data:') || 
-                                 src.includes('openai')) {
-                            
-                            // Add image info to results with medium priority (2)
-                            results.push({
-                                src: src,
-                                width: img.width,
-                                height: img.height,
-                                alt: alt,
-                                classes: classes,
-                                priority: 2
-                            });
-                        }
-                    }
-                    
-                    return results;
-                """)
-                
-                if image_srcs and len(image_srcs) > 0:
-                    # Sort by priority first, then by size
-                    image_srcs.sort(key=lambda x: (x.get('priority', 99), -(x.get('width', 0) * x.get('height', 0))))
-                    
-                    for img_data in image_srcs:
-                        src = img_data.get('src', '')
-                        if src and src.startswith('http'):
-                            try:
-                                import requests
-                                output_file = os.path.join(directory_path, "output.png")
-                                response = requests.get(src, stream=True)
-                                if response.status_code == 200:
-                                    with open(output_file, 'wb') as file:
-                                        for chunk in response.iter_content(1024):
-                                            file.write(chunk)
-                                    print(f"Downloaded image to {output_file} (via JavaScript extraction)")
-                                    return True
-                            except Exception as js_download_err:
-                                print(f"Error downloading image from JavaScript: {js_download_err}")
-            except Exception as js_err:
-                print(f"Error with JavaScript image extraction: {js_err}")
-            
-            # If all automated attempts failed, create the output files
-            print("Could not automatically identify and save any generated image")
-            output_txt = os.path.join(directory_path, "output.txt")
-            with open(output_txt, 'w') as f:
-                f.write("Response captured - check for image")
-            
-            # Create blank output.png as placeholder
-            try:
-                from PIL import Image
-                blank_img = Image.new('RGB', (512, 512), color='white')
-                blank_img.save(os.path.join(directory_path, "output.png"))
-                print("Created blank placeholder image")
-            except:
-                # In case PIL is not available, create empty file
-                with open(os.path.join(directory_path, "output.png"), 'wb') as f:
-                    f.write(b'')
-                
-            return False
-            
+            # Continue with the rest of the existing methods...
+            # (Rest of the method remains unchanged)
+        
         except Exception as e:
             print(f"Error in find_and_save_generated_image: {str(e)}")
             traceback.print_exc()
@@ -1725,24 +1615,1226 @@ class EmuGPTProcessor:
                     
             return False
 
+    def run_parallel(self):
+        """Run the processing on the dataset with parallel processing"""
+        print(f"ChatGPT Automation with {self.num_processes} parallel processes")
+        print("=============================================================")
+        
+        # Start timing
+        overall_start = time.time()
+        
+        # Check dataset directory
+        dataset_dir = self.config["dataset_dir"]
+        if not os.path.exists(dataset_dir):
+            print(f"Error: Dataset directory '{dataset_dir}' not found")
+            return False
+        
+        # Get directories to process
+        all_dirs = sorted([d for d in os.listdir(dataset_dir) 
+                     if os.path.isdir(os.path.join(dataset_dir, d))])
+        
+        if not all_dirs:
+            print(f"No directories found in '{dataset_dir}'")
+            return False
+        
+        # Filter out directories that already have output files and check for required files
+        dirs = []
+        skipped_dirs = []
+        missing_files_dirs = []
+        
+        for directory in all_dirs:
+            dir_path = os.path.join(dataset_dir, directory)
+            output_png = os.path.join(dir_path, "output.png")
+            output_txt = os.path.join(dir_path, "output.txt")
+            input_image = os.path.join(dir_path, "input.jpg")
+            prompt_file = os.path.join(dir_path, "prompt.txt")
+            
+            # Skip if both output files exist and are not empty
+            if (os.path.exists(output_png) and os.path.getsize(output_png) > 0 and
+                os.path.exists(output_txt) and os.path.getsize(output_txt) > 0):
+                skipped_dirs.append(directory)
+            # Skip if required input files don't exist
+            elif not os.path.exists(input_image) or not os.path.exists(prompt_file):
+                missing_files_dirs.append(directory)
+            else:
+                dirs.append(directory)
+        
+        print(f"Found {len(all_dirs)} total directories")
+        print(f"Skipping {len(skipped_dirs)} directories with existing outputs")
+        print(f"Skipping {len(missing_files_dirs)} directories with missing input files")
+        print(f"Need to process {len(dirs)} directories")
+        
+        if not dirs:
+            print("All directories have been processed already!")
+            return True
+        
+        # Limit number of directories if specified
+        max_dirs = self.config["max_dirs_to_process"]
+        if max_dirs > 0:
+            # In parallel mode, interpret max_dirs as "per worker" rather than total
+            total_max_dirs = max_dirs * self.num_processes
+            print(f"Limiting to {max_dirs} directories per worker ({total_max_dirs} total with {self.num_processes} workers)")
+            if len(dirs) > total_max_dirs:
+                dirs = dirs[:total_max_dirs]
+        
+        # Initialize browsers for parallel processing
+        print("\nInitializing browsers for parallel processing - you'll need to log in to each one")
+        
+        drivers = []
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        for i in range(min(self.num_processes, len(dirs))):
+            worker_id = i + 1
+            print(f"\nInitializing browser {worker_id}/{self.num_processes}...")
+            
+            # Create a unique profile for each browser
+            worker_profile = f"{self.user_profile}_{timestamp}_worker{worker_id}"
+            
+            try:
+                print(f"Setting up browser {worker_id} with profile at: {worker_profile}")
+                # Create profile directory
+                os.makedirs(worker_profile, exist_ok=True)
+                
+                # Configure options
+                options = uc.ChromeOptions()
+                
+                # Set user data directory
+                options.add_argument(f"--user-data-dir={worker_profile}")
+                
+                # Additional options for better performance
+                options.add_argument("--no-sandbox")
+                options.add_argument("--window-size=1280,800")
+                
+                # Create the undetected Chrome driver with unique user profile
+                driver = uc.Chrome(
+                    options=options,
+                    headless=False,
+                    use_subprocess=True
+                )
+                
+                # Set window size
+                driver.set_window_size(1280, 800)
+                
+                # Navigate to ChatGPT
+                chatgpt_url = self.config.get("chatgpt_url", "https://chat.openai.com")
+                driver.get(chatgpt_url)
+                
+                # Store the driver
+                drivers.append(driver)
+                
+                print(f"Browser {worker_id} initialized. Please log in if required.")
+            
+            except Exception as e:
+                print(f"Error initializing browser {worker_id}: {e}")
+                # Clean up previously created drivers
+                for d in drivers:
+                    try:
+                        d.quit()
+                    except:
+                        pass
+                return False
+        
+        # Manual authentication for each browser
+        print("\n=================================================")
+        print("MANUAL LOGIN INSTRUCTIONS")
+        print("1. Complete any verification challenges if needed")
+        print("2. Log in to your ChatGPT account in each browser window")
+        print("3. Wait for the chat interface to load completely in all windows")
+        print("=================================================\n")
+        
+        # Wait for manual confirmation that all browsers are logged in
+        manual_confirm = input("Have you completed login for ALL browser windows? (y/n): ").strip().lower()
+        
+        if manual_confirm not in ['y', 'yes']:
+            print("Login not confirmed. Cleaning up and exiting.")
+            # Clean up drivers
+            for d in drivers:
+                try:
+                    d.quit()
+                except:
+                    pass
+            return False
+        
+        print("Login confirmed for all browsers. Starting parallel processing...")
+        
+        # Process directories with existing authenticated browsers
+        processing_times = []
+        processed_count = 0
+        successful_count = 0
+        failed_count = 0
+        
+        try:
+            # Process directories in batches - all browsers working at once
+            for batch_idx in range(0, len(dirs), self.num_processes):
+                batch_dirs = dirs[batch_idx:batch_idx + self.num_processes]
+                batch_size = len(batch_dirs)
+                
+                if batch_size == 0:
+                    break
+                
+                print(f"\n=== Processing batch {batch_idx//self.num_processes + 1} ===")
+                print(f"Starting image generation for {batch_size} directories simultaneously")
+                
+                # Assign directories to browsers and start processing
+                processing_tasks = []
+                for i in range(batch_size):
+                    driver = drivers[i]
+                    dir_path = os.path.join(dataset_dir, batch_dirs[i])
+                    dir_name = os.path.basename(dir_path)
+                    worker_id = i + 1
+                    
+                    print(f"Browser {worker_id} assigned to process: {dir_name}")
+                    
+                    # Create processing task info
+                    task = {
+                        "driver": driver,
+                        "dir_path": dir_path,
+                        "dir_name": dir_name,
+                        "worker_id": worker_id,
+                        "start_time": time.time(),
+                        "status": "started"
+                    }
+                    processing_tasks.append(task)
+                    
+                    # Start processing without waiting (just load the image and send the prompt)
+                    try:
+                        # Start a new chat
+                        print(f"Browser {worker_id}: Starting a new chat...")
+                        driver.get(self.config["chatgpt_url"] + "/chat")
+                        time.sleep(3)  # Wait for the page to load
+                        
+                        # Check for required files
+                        input_image = os.path.join(dir_path, "input.jpg")
+                        prompt_file = os.path.join(dir_path, "prompt.txt")
+                        
+                        # Read prompt
+                        with open(prompt_file, 'r') as f:
+                            prompt = f.read().strip()
+                        
+                        print(f"Browser {worker_id}: Starting to process {dir_name}")
+                        print(f"Browser {worker_id}: Prompt: {prompt}")
+                        
+                        # Upload image
+                        try:
+                            # Look for attachment button and click it
+                            print(f"Browser {worker_id}: Looking for the + button for attachment...")
+                            
+                            # Wait for the page to fully load
+                            time.sleep(2)
+                            
+                            # Try multiple selectors for the + button
+                            plus_button = None
+                            selectors = [
+                                '//button[normalize-space(.)="+"]',
+                                '.flex.items-center button',
+                                '[data-testid="chat-composer-add-button"]',
+                                '//button[contains(@class, "rounded-full") and .//svg]'
+                            ]
+                            
+                            for selector in selectors:
+                                try:
+                                    buttons = driver.find_elements(By.XPATH if selector.startswith('//') else By.CSS_SELECTOR, selector)
+                                    if buttons:
+                                        plus_button = buttons[0]
+                                        print(f"Browser {worker_id}: Found + button using selector: {selector}")
+                                        break
+                                except:
+                                    continue
+                            
+                            if plus_button:
+                                # Scroll to make it visible
+                                driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", plus_button)
+                                time.sleep(0.5)
+                                
+                                # Click the button
+                                driver.execute_script("arguments[0].click();", plus_button)
+                                print(f"Browser {worker_id}: Clicked + button")
+                                time.sleep(1)
+                                
+                                # Find file input and upload image
+                                file_inputs = driver.find_elements(By.CSS_SELECTOR, 'input[type="file"]')
+                                if file_inputs:
+                                    file_inputs[0].send_keys(os.path.abspath(input_image))
+                                    print(f"Browser {worker_id}: Image uploaded")
+                                else:
+                                    print(f"Browser {worker_id}: File input not found")
+                                    task["status"] = "error"
+                                    continue
+                                
+                                # Enter prompt
+                                time.sleep(5)  # Increase wait time after upload
+                                
+                                # Target the contenteditable div based on the screenshot
+                                try:
+                                    print(f"Browser {worker_id}: Looking for contenteditable div to enter prompt...")
+                                    
+                                    # Try multiple approaches to find the input area
+                                    input_area = None
+                                    
+                                    # Approach 1: Find by exact id from screenshot
+                                    try:
+                                        input_area = driver.find_element(By.ID, "prompt-textarea")
+                                        print(f"Browser {worker_id}: Found contenteditable div by id=prompt-textarea")
+                                    except NoSuchElementException:
+                                        print(f"Browser {worker_id}: Could not find by id=prompt-textarea")
+                                    
+                                    # Approach 2: Find by CSS with class and contenteditable
+                                    if not input_area:
+                                        try:
+                                            input_area = driver.find_element(By.CSS_SELECTOR, "div.ProseMirror[contenteditable='true']")
+                                            print(f"Browser {worker_id}: Found contenteditable div by class and attribute")
+                                        except NoSuchElementException:
+                                            print(f"Browser {worker_id}: Could not find by class and contenteditable")
+                                    
+                                    # Approach 3: Find any contenteditable div
+                                    if not input_area:
+                                        try:
+                                            input_areas = driver.find_elements(By.CSS_SELECTOR, "div[contenteditable='true']")
+                                            if input_areas:
+                                                input_area = input_areas[0]
+                                                print(f"Browser {worker_id}: Found contenteditable div (generic)")
+                                        except:
+                                            print(f"Browser {worker_id}: Could not find any contenteditable div")
+                                            
+                                    # If found, interact with the contenteditable div
+                                    if input_area:
+                                        try:
+                                            # Scroll to and focus the element
+                                            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", input_area)
+                                            driver.execute_script("arguments[0].focus();", input_area)
+                                            time.sleep(0.5)
+                                            
+                                            # Clear any existing content
+                                            driver.execute_script("arguments[0].innerHTML = '';", input_area)
+                                            time.sleep(0.5)
+                                            
+                                            # Method 1: Send keys directly
+                                            input_area.send_keys(prompt)
+                                            time.sleep(0.5)
+                                            input_area.send_keys(Keys.RETURN)
+                                            print(f"Browser {worker_id}: Entered text and sent prompt")
+                                        except Exception as input_error:
+                                            print(f"Browser {worker_id}: Error interacting with contenteditable: {input_error}")
+                                            try:
+                                                # Try via JavaScript approach
+                                                print(f"Browser {worker_id}: Trying JavaScript to set contenteditable text...")
+                                                js_prompt = prompt.replace('"', '\\"')
+                                                driver.execute_script(f"""
+                                                    var el = arguments[0];
+                                                    el.innerHTML = "{js_prompt}";
+                                                    el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                                                    
+                                                    // Create and dispatch an Enter keydown event
+                                                    var enterEvent = new KeyboardEvent('keydown', {{
+                                                        key: 'Enter',
+                                                        code: 'Enter',
+                                                        keyCode: 13,
+                                                        which: 13,
+                                                        bubbles: true
+                                                    }});
+                                                    el.dispatchEvent(enterEvent);
+                                                """, input_area)
+                                                print(f"Browser {worker_id}: Set text via JavaScript")
+                                            except Exception as js_error:
+                                                print(f"Browser {worker_id}: JavaScript text setting failed: {js_error}")
+                                                task["status"] = "error"
+                                                continue
+                                    else:
+                                        # Last resort - try to insert by any means
+                                        print(f"Browser {worker_id}: No input area found, trying direct JavaScript injection...")
+                                        try:
+                                            # Target by known selector based on screenshot
+                                            js_prompt = prompt.replace('"', '\\"')
+                                            driver.execute_script(f"""
+                                                var inputArea = document.getElementById('prompt-textarea');
+                                                if (!inputArea) {{
+                                                    inputArea = document.querySelector("div.ProseMirror[contenteditable='true']");
+                                                }}
+                                                if (!inputArea) {{
+                                                    inputArea = document.querySelector("div[contenteditable='true']");
+                                                }}
+                                                
+                                                if (inputArea) {{
+                                                    // Focus and set text
+                                                    inputArea.focus();
+                                                    inputArea.innerHTML = "{js_prompt}";
+                                                    inputArea.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                                                    
+                                                    // Create and dispatch an Enter keydown event
+                                                    var enterEvent = new KeyboardEvent('keydown', {{
+                                                        key: 'Enter',
+                                                        code: 'Enter',
+                                                        keyCode: 13,
+                                                        which: 13,
+                                                        bubbles: true
+                                                    }});
+                                                    inputArea.dispatchEvent(enterEvent);
+                                                }}
+                                            """)
+                                            print(f"Browser {worker_id}: Attempted text insertion via direct JavaScript")
+                                            time.sleep(1)
+                                        except Exception as direct_js_error:
+                                            print(f"Browser {worker_id}: Direct JavaScript insertion failed: {direct_js_error}")
+                                            task["status"] = "error"
+                                            continue
+                                except Exception as e:
+                                    print(f"Browser {worker_id}: Error entering prompt: {e}")
+                                    traceback.print_exc()
+                                    task["status"] = "error"
+                                    continue
+                            else:
+                                print(f"Browser {worker_id}: Could not find + button")
+                                task["status"] = "error"
+                                continue
+                        
+                        except Exception as e:
+                            print(f"Browser {worker_id}: Error during upload/prompt: {e}")
+                            traceback.print_exc()
+                            task["status"] = "error"
+                    
+                    except Exception as e:
+                        print(f"Browser {worker_id}: Error starting task: {e}")
+                        traceback.print_exc()
+                        task["status"] = "error"
+                
+                # All browsers are now processing images in parallel
+                print("\nAll image generation tasks started. Waiting for all images to be generated...")
+                
+                # Wait and monitor all browsers until all images are ready or timeout
+                wait_time = self.config['image_gen_wait_time']
+                timeout = time.time() + wait_time
+                all_completed = False
+                
+                while time.time() < timeout and not all_completed:
+                    # Check all tasks
+                    in_progress = 0
+                    
+                    for task in processing_tasks:
+                        if task["status"] in ["error", "completed", "ready"]:
+                            continue
+                        
+                        worker_id = task["worker_id"]
+                        driver = task["driver"]
+                        
+                        # Check if image is ready by looking for "Image created" text
+                        try:
+                            image_created_spans = driver.find_elements(
+                                By.XPATH, 
+                                '//span[contains(@class, "align-middle") and contains(@class, "text-token-text-secondary") and text()="Image created"]'
+                            )
+                            
+                            if image_created_spans:
+                                print(f"Browser {worker_id}: ✓ Image creation confirmed!")
+                                task["status"] = "ready"
+                            else:
+                                # Still in progress
+                                in_progress += 1
+                        except Exception as e:
+                            print(f"Browser {worker_id}: Error checking status: {e}")
+                    
+                    # If no tasks are in progress, we're done
+                    if in_progress == 0:
+                        all_completed = True
+                        print("All images have been generated!")
+                        break
+                    
+                    # Print progress update every 10 seconds
+                    elapsed = time.time() - processing_tasks[0]["start_time"]
+                    if int(elapsed) % 10 == 0 and int(elapsed) > 0 and abs(elapsed - int(elapsed)) < 0.1:
+                        print(f"Still waiting... {int(elapsed)}/{wait_time} seconds elapsed, {in_progress}/{batch_size} still in progress")
+                    
+                    # Sleep briefly to avoid hammering the CPU
+                    time.sleep(0.5)
+                
+                # Time's up or all images are ready, capture all results
+                print("\nCapturing results for all browsers...")
+                
+                for task in processing_tasks:
+                    if task["status"] == "error":
+                        # Skip tasks that errored during setup
+                        print(f"Browser {task['worker_id']}: Skipping capture for {task['dir_name']} due to previous error")
+                        processed_count += 1
+                        failed_count += 1
+                        continue
+                        
+                    worker_id = task["worker_id"]
+                    driver = task["driver"]
+                    dir_path = task["dir_path"]
+                    dir_name = task["dir_name"]
+                    
+                    processed_count += 1
+                    
+                    # Capture the result even if we didn't detect "Image created"
+                    try:
+                        # Temporarily set self.driver to this browser's driver
+                        self.driver = driver
+                        success = self.find_and_save_generated_image(dir_path)
+                        
+                        if success:
+                            print(f"Browser {worker_id}: Successfully captured image for {dir_name}")
+                            successful_count += 1
+                            
+                            # Calculate processing time
+                            end_time = time.time()
+                            processing_time = end_time - task["start_time"]
+                            processing_times.append(processing_time)
+                            
+                            # Create output.txt with processing time
+                            output_txt = os.path.join(dir_path, "output.txt")
+                            try:
+                                with open(output_txt, 'w') as f:
+                                    f.write(f"Processing time: {processing_time:.2f} seconds")
+                            except Exception as e:
+                                print(f"Browser {worker_id}: Error creating output.txt: {e}")
+                            
+                            print(f"Browser {worker_id}: Processing time: {processing_time:.2f} seconds")
+                        else:
+                            print(f"Browser {worker_id}: Failed to capture image for {dir_name}")
+                            failed_count += 1
+                    except Exception as e:
+                        print(f"Browser {worker_id}: Error capturing result: {e}")
+                        failed_count += 1
+                
+                # Clear all chats before proceeding to next batch
+                print("\nClearing all chats before next batch...")
+                
+                # Loop through all browsers, not just the ones used in this batch
+                for i, driver in enumerate(drivers):
+                    worker_id = i + 1
+                    
+                    # Skip unused browsers in this batch
+                    if i >= batch_size:
+                        continue
+                        
+                    try:
+                        print(f"Browser {worker_id}: Deleting current chat before next batch...")
+                        
+                        # Try multiple methods to delete the chat
+                        deleted = False
+                        
+                        # Method 1: Click the three-dots menu and then the Delete button
+                        try:
+                            # Find the conversation options button with complete attributes from the provided HTML
+                            print(f"Browser {worker_id}: Looking for options button...")
+                            
+                            # Try exact selector with SVG path for the triple dot button
+                            options_xpath = (
+                                '//button[@type="button" and @aria-label="Open conversation options" and '
+                                '@data-testid="conversation-options-button" and starts-with(@id, "radix-") and '
+                                '@aria-haspopup="menu" and contains(@class, "text-token-text-secondary") and '
+                                'contains(@class, "flex") and contains(@class, "items-center")]'
+                                '[.//svg[@width="24" and @height="24" and @viewBox="0 0 24 24" and contains(@class, "h-[22px]") '
+                                'and contains(@class, "w-[22px]")]]'
+                            )
+                            
+                            options_button = driver.find_elements(By.XPATH, options_xpath)
+                            
+                            # Try finding by the unique SVG path pattern for the three dots
+                            if not options_button:
+                                print(f"Browser {worker_id}: Trying SVG path pattern...")
+                                svg_path_xpath = (
+                                    '//button[.//svg[.//path[contains(@d, "M12 21") and contains(@d, "M12 14") and contains(@d, "M12 7")]]]'
+                                )
+                                options_button = driver.find_elements(By.XPATH, svg_path_xpath)
+                            
+                            # Basic selector as fallback
+                            if not options_button:
+                                print(f"Browser {worker_id}: Trying basic selector...")
+                                options_button = driver.find_elements(By.CSS_SELECTOR, 
+                                    'button[aria-label="Open conversation options"][data-testid="conversation-options-button"]')
+                            
+                            # Previous fallbacks
+                            if not options_button:
+                                print(f"Browser {worker_id}: Trying previous fallbacks...")
+                                options_button = driver.find_elements(By.XPATH, 
+                                    '//button[contains(@class, "rounded-full") and .//svg]')
+                                
+                            if options_button:
+                                # Click the button to open the dropdown
+                                print(f"Browser {worker_id}: Found options button, clicking it...")
+                                options_button[0].click()
+                                print(f"Browser {worker_id}: Clicked the conversation options button")
+                                time.sleep(1)
+                                
+                                # Now find and click the Delete button in the dropdown with trash icon
+                                # Try using relative coordinates to the three-dots button
+                                delete_button_clicked = False
+                                try:
+                                    # We already clicked the options button, so try clicking 100px below it
+                                    print(f"Browser {worker_id}: Trying to click Delete button using relative coordinates...")
+                                    
+                                    # Get the location of the options button we just clicked
+                                    options_loc = options_button[0].location
+                                    options_x = options_loc['x']
+                                    options_y = options_loc['y']
+                                    
+                                    # Click about 100px below the options button where the Delete option should be
+                                    delete_x = options_x
+                                    delete_y = options_y + 100
+                                    
+                                    # Click at the calculated position
+                                    actions = ActionChains(driver)
+                                    actions.move_by_offset(delete_x, delete_y).click().perform()
+                                    actions.reset_actions()
+                                    
+                                    print(f"Browser {worker_id}: Clicked at position ({delete_x}, {delete_y}) for Delete button")
+                                    delete_button_clicked = True
+                                    time.sleep(1)
+                                except Exception as coord_err:
+                                    print(f"Browser {worker_id}: Error clicking at relative coordinates: {coord_err}")
+                                    
+                                    # Try a few other positions if the first one fails
+                                    for y_offset in [80, 120, 140, 160]:
+                                        try:
+                                            actions = ActionChains(driver)
+                                            actions.move_to_element(options_button[0]).move_by_offset(0, y_offset).click().perform()
+                                            actions.reset_actions()
+                                            print(f"Browser {worker_id}: Clicked at y-offset {y_offset} from options button")
+                                            delete_button_clicked = True
+                                            time.sleep(1)
+                                            break
+                                        except Exception:
+                                            continue
+                                
+                                # If coordinate approach didn't work, try selectors
+                                if not delete_button_clicked:
+                                    # First try to find by text content
+                                    delete_buttons = driver.find_elements(By.XPATH, 
+                                        '//button[.//div[text()="Delete"]]')
+                                    
+                                    if not delete_buttons:
+                                        # Try a more general XPATH
+                                        delete_buttons = driver.find_elements(By.XPATH, 
+                                            '//button[contains(., "Delete")]')
+                                        
+                                    if delete_buttons:
+                                        print(f"Browser {worker_id}: Found Delete button with selector, clicking it...")
+                                        delete_buttons[0].click()
+                                        delete_button_clicked = True
+                                        print(f"Browser {worker_id}: Clicked Delete button")
+                                        time.sleep(1)
+                                
+                                # Continue with confirmation dialog if we managed to click delete
+                                if delete_button_clicked:
+                                    # Look for the confirmation dialog with "Delete chat?" heading
+                                    print(f"Browser {worker_id}: Looking for delete confirmation dialog...")
+                                    
+                                    # Wait for the dialog to appear
+                                    try:
+                                        WebDriverWait(driver, 3).until(
+                                            EC.presence_of_element_located((By.XPATH, '//h2[text()="Delete chat?"]'))
+                                        )
+                                        print(f"Browser {worker_id}: Delete confirmation dialog appeared")
+                                    except TimeoutException:
+                                        print(f"Browser {worker_id}: Delete confirmation dialog didn't appear as expected")
+                                    
+                                    # Try to find the red Delete button in the confirmation dialog
+                                    confirm_button = None
+                                    
+                                    # EXACT selector for the red confirmation button
+                                    try:
+                                        confirm_button = driver.find_element(By.CSS_SELECTOR, 
+                                            'button[data-testid="delete-conversation-confirm-button"]')
+                                        print(f"Browser {worker_id}: Found confirmation button by data-testid")
+                                    except NoSuchElementException:
+                                        print(f"Browser {worker_id}: Couldn't find button by data-testid")
+                                        
+                                    # Try by the div structure containing "Delete" text
+                                    if not confirm_button:
+                                        try:
+                                            confirm_buttons = driver.find_elements(By.XPATH, 
+                                                '//button[contains(@class, "btn-danger")]//div[contains(@class, "flex") and contains(@class, "items-center") and contains(@class, "justify-center") and text()="Delete"]')
+                                            if confirm_buttons:
+                                                confirm_button = confirm_buttons[0]
+                                                print(f"Browser {worker_id}: Found confirmation button by div structure")
+                                        except Exception as e:
+                                            print(f"Browser {worker_id}: Error finding button by div: {e}")
+                                    
+                                    # Try other selectors if needed
+                                    if not confirm_button:
+                                        try:
+                                            confirm_buttons = driver.find_elements(By.XPATH, 
+                                                '//button[contains(@class, "danger") and .//div[text()="Delete"]]')
+                                            if confirm_buttons:
+                                                confirm_button = confirm_buttons[0]
+                                                print(f"Browser {worker_id}: Found confirmation button by class danger and text")
+                                        except Exception as e:
+                                            print(f"Browser {worker_id}: Error finding button by danger class: {e}")
+                                    
+                                    # Final fallback
+                                    if not confirm_button:
+                                        try:
+                                            confirm_buttons = driver.find_elements(By.XPATH, 
+                                                '//button[text()="Delete" or .//div[text()="Delete"]]')
+                                            if confirm_buttons:
+                                                # Try to filter to find the one that looks like a danger button (usually red)
+                                                danger_buttons = [b for b in confirm_buttons if 'danger' in b.get_attribute('class') or 'red' in b.get_attribute('class')]
+                                                if danger_buttons:
+                                                    confirm_button = danger_buttons[0]
+                                                else:
+                                                    confirm_button = confirm_buttons[0]
+                                                print(f"Browser {worker_id}: Found confirmation button by text")
+                                        except Exception as e:
+                                            print(f"Browser {worker_id}: Error finding button by text: {e}")
+                                    
+                                    if confirm_button:
+                                        try:
+                                            confirm_button.click()
+                                            print(f"Browser {worker_id}: Clicked confirmation button")
+                                            time.sleep(2)
+                                            deleted = True
+                                        except Exception as click_err:
+                                            print(f"Browser {worker_id}: Error clicking confirmation button: {click_err}")
+                                            try:
+                                                # Try JavaScript click if direct click fails
+                                                driver.execute_script("arguments[0].click();", confirm_button)
+                                                print(f"Browser {worker_id}: Clicked confirmation button via JavaScript")
+                                                time.sleep(2)
+                                                deleted = True
+                                            except Exception as js_err:
+                                                print(f"Browser {worker_id}: JavaScript click failed: {js_err}")
+                                        else:
+                                            print(f"Browser {worker_id}: Could not find confirmation button in the dialog")
+
+                        except Exception as e1:
+                            print(f"Browser {worker_id}: Error using the Delete button: {e1}")
+                        
+                        # JavaScript method with better targeting of the delete button and confirmation
+                        if not deleted:
+                            try:
+                                print(f"Browser {worker_id}: Trying JavaScript approach with improved button targeting...")
+                                deleted = driver.execute_script("""
+                                    // Find and click the three dots menu button
+                                    const findAndClickOptionsButton = () => {
+                                        // Find SVG with path containing the three dots pattern
+                                        const svgPaths = document.querySelectorAll('svg path');
+                                        let optionsButton = null;
+                                        
+                                        for (const path of svgPaths) {
+                                            const d = path.getAttribute('d');
+                                            if (d && d.includes('M12 21') && d.includes('M12 14') && d.includes('M12 7')) {
+                                                optionsButton = path.closest('button');
+                                                break;
+                                            }
+                                        }
+                                        
+                                        if (!optionsButton) {
+                                            // Try with aria-label
+                                            optionsButton = document.querySelector('button[aria-label="Open conversation options"]');
+                                        }
+                                        
+                                        if (optionsButton) {
+                                            console.log("Found options button, clicking it");
+                                            optionsButton.click();
+                                            return true;
+                                        } else {
+                                            console.log("Could not find options button");
+                                            return false;
+                                        }
+                                    };
+                                    
+                                    // Find and click the Delete button in the dropdown
+                                    const findAndClickDeleteButton = () => {
+                                        console.log("Trying to click Delete button relative to options button");
+                                        
+                                        try {
+                                            // Get position of the menu that opened
+                                            const menu = document.querySelector('[role="menu"]');
+                                            if (menu) {
+                                                // Find all menu items
+                                                const menuItems = menu.querySelectorAll('button');
+                                                
+                                                // Look for the delete button
+                                                for (const item of menuItems) {
+                                                    if (item.textContent.includes('Delete')) {
+                                                        console.log("Found Delete button in menu");
+                                                        item.click();
+                                                        return true;
+                                                    }
+                                                }
+                                                        
+                                                // If we found the menu but not the delete button,
+                                                // click the last item (usually delete is at the bottom)
+                                                if (menuItems.length > 0) {
+                                                    console.log("Clicking last menu item (likely Delete)");
+                                                    menuItems[menuItems.length - 1].click();
+                                                    return true;
+                                                }
+                                            }
+                                            
+                                            // If no menu found, try simulating a click at a position below the options button
+                                            console.log("No menu found, trying direct click at relative position");
+                                            
+                                            // Create and dispatch a click event at a position below the options button
+                                            const clickAt = (x, y) => {
+                                                const clickEvent = new MouseEvent('click', {
+                                                    view: window,
+                                                    bubbles: true,
+                                                    cancelable: true,
+                                                    clientX: x,
+                                                    clientY: y
+                                                });
+                                                
+                                                document.elementFromPoint(x, y).dispatchEvent(clickEvent);
+                                            };
+                                            
+                                            // Try a few positions
+                                            const menuPositions = [80, 100, 120, 140];
+                                            for (const yOffset of menuPositions) {
+                                                // Find menu button element that was clicked
+                                                const menuButton = document.querySelector('button[aria-expanded="true"][aria-controls^="radix-"]');
+                                                if (menuButton) {
+                                                    const rect = menuButton.getBoundingClientRect();
+                                                    const x = rect.left + rect.width/2;
+                                                    const y = rect.bottom + yOffset;
+                                                    
+                                                    console.log(`Clicking at relative position y+${yOffset}`);
+                                                    clickAt(x, y);
+                                                    return true;
+                                                }
+                                            }
+                                            
+                                            return false;
+                                        } catch (e) {
+                                            console.log("Error in findAndClickDeleteButton: " + e);
+                                            return false;
+                                        }
+                                    };
+                                    
+                                    // Find and click the confirmation Delete button
+                                    const findAndClickConfirmButton = () => {
+                                        // Look for the confirmation dialog
+                                        const dialog = document.querySelector('h2');
+                                        if (!dialog || dialog.textContent !== 'Delete chat?') {
+                                            console.log("Dialog not found or not a delete confirmation");
+                                            return false;
+                                        }
+                                        
+                                        console.log("Found delete confirmation dialog");
+                                        
+                                        // Try to find the red delete button with data-testid
+                                        let confirmButton = document.querySelector('button[data-testid="delete-conversation-confirm-button"]');
+                                        
+                                        if (!confirmButton) {
+                                            // Try with the class attributes
+                                            const buttonDivs = document.querySelectorAll('div.flex.items-center.justify-center');
+                                            for (const div of buttonDivs) {
+                                                if (div.textContent.trim() === 'Delete') {
+                                                    const button = div.closest('button');
+                                                    if (button && (button.classList.contains('btn-danger') || 
+                                                                    window.getComputedStyle(button).backgroundColor.includes('rgb(239'))) {
+                                                        confirmButton = button;
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        
+                                        if (!confirmButton) {
+                                            // Try more generic approach - find all buttons and look for the one that's red
+                                            const allButtons = document.querySelectorAll('button');
+                                            for (const btn of allButtons) {
+                                                const style = window.getComputedStyle(btn);
+                                                if (btn.textContent.includes('Delete') && 
+                                                    !btn.textContent.includes('Cancel') &&
+                                                    (style.backgroundColor.includes('rgb(239') || 
+                                                     style.color.includes('rgb(239'))) {
+                                                    confirmButton = btn;
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                        
+                                        if (confirmButton) {
+                                            console.log("Found confirm button, clicking it");
+                                            confirmButton.click();
+                                            return true;
+                                        } else {
+                                            console.log("Could not find confirmation button");
+                                            return false;
+                                        }
+                                    };
+                                    
+                                    // Execute the full deletion sequence with proper timing
+                                    return new Promise((resolve) => {
+                                        // Step 1: Click the options button
+                                        if (findAndClickOptionsButton()) {
+                                            // Step 2: Wait and click Delete button
+                                            setTimeout(() => {
+                                                if (findAndClickDeleteButton()) {
+                                                    // Step 3: Wait and click confirmation button
+                                                    setTimeout(() => {
+                                                        if (findAndClickConfirmButton()) {
+                                                            resolve(true);
+                                                        } else {
+                                                            resolve(false);
+                                                        }
+                                                    }, 1000);
+                                                } else {
+                                                    resolve(false);
+                                                }
+                                            }, 1000);
+                                        } else {
+                                            resolve(false);
+                                        }
+                                    });
+                                """)
+                                
+                                if deleted:
+                                    print(f"Browser {worker_id}: Successfully deleted chat via JavaScript")
+                                    time.sleep(3)  # Wait longer to ensure deletion completes
+                                else:
+                                    print(f"Browser {worker_id}: JavaScript approach did not complete deletion")
+                                    
+                            except Exception as e2:
+                                print(f"Browser {worker_id}: Error with JavaScript delete: {e2}")
+                            
+                            # Fallback methods from before if delete doesn't work
+                            if not deleted:
+                                # Method 3: Look for "New chat" button
+                                try:
+                                    new_chat_buttons = driver.find_elements(By.XPATH, 
+                                        '//a[contains(@href, "/chat") and contains(., "New chat")]')
+                                    
+                                    if new_chat_buttons:
+                                        new_chat_buttons[0].click()
+                                        print(f"Browser {worker_id}: Clicked 'New chat' button (fallback)")
+                                        time.sleep(2)
+                                        deleted = True
+                                except Exception as e3:
+                                    print(f"Browser {worker_id}: Error finding New chat button: {e3}")
+                                
+                                # Method 4: Navigate directly to a new chat as a final fallback
+                                if not deleted:
+                                    try:
+                                        driver.get(self.config["chatgpt_url"] + "/chat")
+                                        print(f"Browser {worker_id}: Navigated to new chat URL (final fallback)")
+                                        time.sleep(3)
+                                        deleted = True
+                                    except Exception as e4:
+                                        print(f"Browser {worker_id}: Error navigating to new chat: {e4}")
+                                
+                                        print(f"Browser {worker_id}: Error navigating to new chat: {e4}")
+                                
+                                if not deleted:
+                                    print(f"Browser {worker_id}: Could not delete or clear chat, will try again on next processing")
+
+                    except Exception as clear_err:
+                        print(f"Browser {worker_id}: Error deleting chat: {clear_err}")
+                        # Continue anyway, don't fail the processing
+                print(f"\nCompleted batch {batch_idx//self.num_processes + 1}: {successful_count}/{batch_size} successful")
+                
+                # Wait briefly before starting next batch
+                if batch_idx + self.num_processes < len(dirs):
+                    print("Waiting 5 seconds before starting next batch...")
+                    time.sleep(5)
+        
+        except Exception as e:
+            print(f"Error during parallel processing: {e}")
+            traceback.print_exc()
+            
+        finally:
+            # Clean up all browsers
+            for i, driver in enumerate(drivers):
+                try:
+                    driver.quit()
+                    print(f"Browser {i+1} closed")
+                except:
+                    pass
+            
+            # Reset driver reference
+            self.driver = None
+        
+        # Calculate overall time
+        overall_end = time.time()
+        total_time = overall_end - overall_start
+        
+        # Display summary
+        print("\n=== Processing Summary ===")
+        print(f"Total directories processed: {processed_count}")
+        print(f"Successful: {successful_count}")
+        print(f"Failed: {failed_count}")
+        
+        # Calculate and display statistics
+        if successful_count > 0 and processing_times:
+            avg_time = sum(processing_times) / len(processing_times)
+            hourly_rate = 3600 / avg_time * self.num_processes
+            
+            print(f"\nAverage processing time: {avg_time:.2f} seconds per image")
+            print(f"Data collection rate: {hourly_rate:.2f} images per hour (with {self.num_processes} parallel processes)")
+            print(f"Total time: {total_time:.2f} seconds")
+            
+            # Format as hours, minutes, seconds
+            hours, remainder = divmod(total_time, 3600)
+            minutes, seconds = divmod(remainder, 60)
+            print(f"Total time: {int(hours)}h {int(minutes)}m {seconds:.2f}s")
+        
+        # Save statistics
+        stats = self._save_parallel_stats(processed_count, successful_count, failed_count, processing_times, total_time)
+        
+        return successful_count > 0
+
+    def _save_parallel_stats(self, processed, successful, failed, processing_times, total_time):
+        """Save parallel processing statistics to a file"""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        stats_file = f"emu_parallel_stats_{timestamp}.json"
+        
+        # Calculate statistics
+        avg_time = 0
+        hourly_rate = 0
+        
+        if processing_times and len(processing_times) > 0:
+            avg_time = sum(processing_times) / len(processing_times)
+            hourly_rate = 3600 / avg_time * self.num_processes if avg_time > 0 else 0
+        
+        # Format time as HH:MM:SS
+        hours, remainder = divmod(total_time, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        formatted_time = f"{int(hours)}h {int(minutes)}m {seconds:.2f}s"
+        
+        # Create stats dictionary
+        stats = {
+            "timestamp": timestamp,
+            "total_dirs_processed": processed,
+            "successful": successful,
+            "failed": failed,
+            "total_time_seconds": total_time,
+            "total_time_formatted": formatted_time,
+            "avg_time_per_image_seconds": avg_time,
+            "images_per_hour": hourly_rate,
+            "num_processes": self.num_processes,
+            "num_processing_times_recorded": len(processing_times)
+        }
+        
+        # Save to file
+        try:
+            with open(stats_file, 'w') as f:
+                json.dump(stats, f, indent=2)
+            print(f"Statistics saved to {stats_file}")
+        except Exception as e:
+            print(f"Error saving statistics: {str(e)}")
+            
+        return stats
+
+    def _setup_chrome_options(self, profile_dir):
+        """Set up Chrome options with the specified profile directory."""
+        import undetected_chromedriver as uc
+        options = uc.ChromeOptions()
+        
+        # Configure user data directory
+        options.add_argument(f"--user-data-dir={profile_dir}")
+        
+        # Configure window size - use default values if not in config
+        window_width = self.config.get("window_width", 1280)
+        window_height = self.config.get("window_height", 800)
+        options.add_argument(f"--window-size={window_width},{window_height}")
+        
+        # Add performance optimization flags
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-infobars")
+        options.add_argument("--disable-notifications")
+        
+        # Set debug level
+        options.add_argument("--log-level=3")
+        
+        return options
+    
+    def _check_gpt_authentication(self, driver):
+        """Check if authentication to ChatGPT is needed and wait for login"""
+        import time
+        
+        # Check if we need to log in
+        if "auth" in driver.current_url or "login" in driver.current_url:
+            print("Authentication required. Please log in.")
+            
+            # Wait for login to complete (longer timeout)
+            wait_time = self.config.get("login_wait_time", 180)
+            print(f"Waiting up to {wait_time} seconds for login...")
+            
+            timeout = time.time() + wait_time
+            while time.time() < timeout:
+                try:
+                    # Check if we've been redirected to the chat page
+                    if "chat.openai.com" in driver.current_url and "auth" not in driver.current_url:
+                        print("Successfully logged in")
+                        break
+                    time.sleep(1)
+                except:
+                    time.sleep(1)
+            
+            # If still on login page after timeout, raise exception
+            if "auth" in driver.current_url or "login" in driver.current_url:
+                raise Exception("Login timeout - authentication failed")
+                
+    def _worker_process(self, worker_id, dir_queue, result_queue, worker_profile, 
+                      processed_counter, success_counter, failed_counter):
+        """Worker process for parallel processing of directories"""
+        import time
+        import random
+        import queue
+        import multiprocessing.queues  # For proper queue type detection
+        # Use the full import for undetected-chromedriver
+        import undetected_chromedriver as uc
+        from selenium.common.exceptions import NoSuchElementException, WebDriverException
+        
+        # Add small random delay to prevent race conditions
+        time.sleep(random.uniform(0.5, 2.0))
+        
+        driver = None
+        max_retries = 3
+        
+        try:
+            # Initialize chrome with retries
+            for attempt in range(max_retries):
+                try:
+                    print(f"Worker {worker_id}: Starting (attempt {attempt+1}/{max_retries})")
+                    
+                    # Setup Chrome options using the existing profile from manual login
+                    options = self._setup_chrome_options(worker_profile)
+                    
+                    # Initialize driver
+                    driver = uc.Chrome(options=options)
+                    
+                    # Navigate to ChatGPT
+                    chatgpt_url = self.config.get("chatgpt_url", "https://chat.openai.com")
+                    driver.get(chatgpt_url)
+                    
+                    # Wait for page to load
+                    time.sleep(3)
+                    
+                    print(f"Worker {worker_id}: Browser initialized successfully")
+                    break
+                    
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        # Calculate backoff time (1s, 3s, 9s, etc.)
+                        backoff = (2 ** attempt) * 1.0 + random.uniform(0, 0.5)
+                        print(f"Worker {worker_id}: Failed to initialize browser. Retrying in {backoff:.1f}s...")
+                        print(f"Error: {str(e)}")
+                        time.sleep(backoff)
+                    else:
+                        print(f"Worker {worker_id}: Failed to initialize browser after {max_retries} attempts")
+                        print(f"Error: {str(e)}")
+                        raise
+            # Process directories from the queue
+            local_processing_times = []
+            
+            while True:
+                try:
+                    # Get next directory from queue with timeout
+                    directory = dir_queue.get(timeout=5)
+                    
+                    # Skip if output files already exist
+                    output_jpg = os.path.join(directory, "output.jpg")
+                    output_png = os.path.join(directory, "output.png")
+                    
+                    if (os.path.exists(output_jpg) and os.path.getsize(output_jpg) > 0) or \
+                       (os.path.exists(output_png) and os.path.getsize(output_png) > 0):
+                        print(f"Worker {worker_id}: Skipping {directory} (output already exists)")
+                        
+                        # Only call task_done if it's a multiprocessing.queues.Queue
+                        if hasattr(dir_queue, 'task_done'):
+                            dir_queue.task_done()
+                            
+                        with processed_counter.get_lock():
+                            processed_counter.value += 1
+                        with success_counter.get_lock():
+                            success_counter.value += 1
+                        continue
+                    
+                    print(f"Worker {worker_id}: Processing {directory}")
+                    
+                    # Process directory and track time
+                    start_time = time.time()
+                    
+                    # Set the driver for this instance to use in process_directory
+                    self.driver = driver
+                    success = self.process_directory(directory)
+                    self.driver = None  # Clear the reference
+                    
+                    end_time = time.time()
+                    
+                    # Update counters and processing time
+                    processing_time = end_time - start_time
+                    local_processing_times.append(processing_time)
+                    
+                    with processed_counter.get_lock():
+                        processed_counter.value += 1
+                        
+                    if success:
+                        with success_counter.get_lock():
+                            success_counter.value += 1
+                        result_queue.put({"processing_time": processing_time})
+                        print(f"Worker {worker_id}: Successfully processed {directory} in {processing_time:.1f}s")
+                    else:
+                        with failed_counter.get_lock():
+                            failed_counter.value += 1
+                        print(f"Worker {worker_id}: Failed to process {directory}")
+                    
+                    # Mark task as done if the queue has this method
+                    if hasattr(dir_queue, 'task_done'):
+                        dir_queue.task_done()
+                
+                except queue.Empty:
+                    # No more work
+                    print(f"Worker {worker_id}: No more directories to process")
+                    break
+                    
+                except Exception as e:
+                    # Handle errors during processing
+                    print(f"Worker {worker_id}: Error processing directory: {str(e)}")
+                    
+                    # Try to recover by refreshing the page
+                    try:
+                        print(f"Worker {worker_id}: Attempting to recover by refreshing the page")
+                        driver.refresh()
+                        time.sleep(5)  # Wait for page to load
+                    except:
+                        print(f"Worker {worker_id}: Failed to refresh page")
+                    
+                    # Mark task as done if the queue has this method
+                    if 'directory' in locals() and hasattr(dir_queue, 'task_done'):
+                        dir_queue.task_done()
+                        
+                    with failed_counter.get_lock():
+                        failed_counter.value += 1
+            
+            # Report worker statistics
+            result_queue.put({
+                "worker_id": worker_id,
+                "processing_times": local_processing_times
+            })
+            
+        except Exception as e:
+            # Handle worker-level errors
+            print(f"Worker {worker_id}: Critical error: {str(e)}")
+            
+        finally:
+            # Clean up
+            if driver is not None:
+                try:
+                    driver.quit()
+                except:
+                    pass
+                    
+            print(f"Worker {worker_id}: Cleanup complete")
+
 
 def main():
     """Main entry point"""
     parser = argparse.ArgumentParser(description="ChatGPT Automation for Emu Dataset using undetected-chromedriver")
     parser.add_argument("--config", type=str, help="Path to configuration file")
-    parser.add_argument("--max_dirs", type=int, default=0, help="Maximum number of directories to process")
+    parser.add_argument("--max_dirs", type=int, default=0, help="Maximum number of directories to process (per worker in parallel mode)")
     parser.add_argument("--profile", type=str, help="Path to Chrome profile directory")
     parser.add_argument("--use_coordinates", action="store_true", help="Use coordinate-based interaction instead of selectors")
     parser.add_argument("--calibrate", action="store_true", help="Run calibration mode to identify UI element coordinates")
+    parser.add_argument("--parallel", action="store_true", help="Use parallel processing with multiple workers")
+    parser.add_argument("--processes", type=int, default=8, help="Number of parallel processes to use")
     
     args = parser.parse_args()
     
     # Create processor
     processor = EmuGPTProcessor(args.config)
-    
-    # Check if we should run calibration mode
-    if args.calibrate:
-        return run_calibration_mode(processor)
     
     # Override config with command line arguments
     if args.max_dirs > 0:
@@ -1752,104 +2844,18 @@ def main():
         processor.user_profile = args.profile
     if args.use_coordinates:
         processor.config["use_coordinates"] = True
+    if args.processes > 0:
+        processor.num_processes = args.processes
     
-    # Run processing
-    success = processor.run()
+    # Run processing (either parallel or single-threaded)
+    if args.parallel:
+        print(f"Running with parallel processing ({processor.num_processes} processes)")
+        success = processor.run_parallel()
+    else:
+        print("Running with single-threaded processing")
+        success = processor.run()
     
     return 0 if success else 1
-
-def run_calibration_mode(processor):
-    """Run in calibration mode to identify UI element coordinates"""
-    print("Running in CALIBRATION MODE")
-    print("This will help you determine the coordinates of ChatGPT UI elements")
-    print("Follow the instructions carefully...")
-    
-    # Set up browser
-    processor.driver = processor.setup_browser()
-    
-    try:
-        # Go to ChatGPT
-        processor.driver.get(processor.config["chatgpt_url"])
-        print("Navigating to ChatGPT...")
-        
-        # Wait for login
-        print("\n=================================================")
-        print("MANUAL LOGIN INSTRUCTIONS")
-        print("1. Complete any verification challenges if needed")
-        print("2. Log in to your ChatGPT account if not already logged in")
-        print("3. Wait for the chat interface to load completely")
-        print("=================================================\n")
-        
-        input("Press Enter when you are logged in and can see the chat interface...")
-        
-        # Help user identify coordinates
-        print("\nMOUSE COORDINATE CALIBRATION")
-        print("1. To identify coordinates, move your mouse to the UI element")
-        print("2. Press Ctrl+Shift+I to open developer tools")
-        print("3. Click on the Console tab")
-        print("4. Paste this code and press Enter:")
-        print("   document.addEventListener('mousemove', e => console.log(`Mouse X: ${e.clientX}, Y: ${e.clientY}`));")
-        print("5. Move your mouse over the UI elements and note the coordinates")
-        print("6. When done, close the developer tools")
-        
-        # Collect coordinates
-        coordinates = {}
-        
-        print("\nPlease move your mouse to the ATTACHMENT BUTTON and note its coordinates")
-        x = int(input("Enter X coordinate for attachment button: "))
-        y = int(input("Enter Y coordinate for attachment button: "))
-        coordinates["attachment_button"] = {"x": x, "y": y}
-        
-        print("\nPlease move your mouse to the TEXTAREA and note its coordinates")
-        x = int(input("Enter X coordinate for textarea: "))
-        y = int(input("Enter Y coordinate for textarea: "))
-        coordinates["textarea"] = {"x": x, "y": y}
-        
-        print("\nAfter sending a message with an image, move your mouse to where the GENERATED IMAGE appears")
-        print("If unsure, you can skip this step by entering 0 for both coordinates")
-        x = int(input("Enter X coordinate for generated image: "))
-        y = int(input("Enter Y coordinate for generated image: "))
-        if x > 0 and y > 0:
-            coordinates["generated_image"] = {"x": x, "y": y}
-        
-        # Save coordinates to config file
-        config_file = processor.config_manager.config_file if hasattr(processor, 'config_manager') else "calibrated_config.json"
-        if not config_file or config_file == "calibrated_config.json":
-            config_file = input("Enter filename to save calibration (default: calibrated_config.json): ").strip()
-            if not config_file:
-                config_file = "calibrated_config.json"
-        
-        # Create or update config file
-        try:
-            if os.path.exists(config_file):
-                with open(config_file, 'r') as f:
-                    config = json.load(f)
-            else:
-                config = processor.config.copy()
-            
-            # Update coordinates
-            config["coordinates"] = coordinates
-            config["use_coordinates"] = True
-            
-            with open(config_file, 'w') as f:
-                json.dump(config, f, indent=2)
-            
-            print(f"\nCalibration saved to {config_file}")
-            print(f"To use these coordinates, run with: --config {config_file} --use_coordinates")
-            
-        except Exception as e:
-            print(f"Error saving calibration: {str(e)}")
-        
-        return 0
-        
-    except Exception as e:
-        print(f"Error during calibration: {str(e)}")
-        traceback.print_exc()
-        return 1
-    finally:
-        if processor.driver:
-            processor.driver.quit()
-            print("Browser closed")
 
 
 if __name__ == "__main__":

@@ -232,6 +232,18 @@ class EmuGPTProcessor:
             print(f"Skipping {dir_name} - missing files")
             return False
         
+        # Check if output files already exist - skip if they do
+        output_jpg = os.path.join(directory_path, "output.jpg")
+        output_png = os.path.join(directory_path, "output.png")
+        
+        if os.path.exists(output_jpg) and os.path.getsize(output_jpg) > 0:
+            print(f"Skipping {dir_name} - output.jpg already exists")
+            return True  # Count as success since we already have the output
+        
+        if os.path.exists(output_png) and os.path.getsize(output_png) > 0:
+            print(f"Skipping {dir_name} - output.png already exists")
+            return True  # Count as success since we already have the output
+        
         # Read prompt
         with open(prompt_file, 'r') as f:
             prompt = f.read().strip()
@@ -854,6 +866,422 @@ class EmuGPTProcessor:
         
         print(f"Processing time: {processing_time:.2f} seconds")
         print(f"Status: {'Success' if success else 'Failed'}")
+        
+        # Clear/delete the chat before moving to the next directory
+        try:
+            print("Deleting current chat before moving to next...")
+            
+            # Try multiple methods to delete the chat
+            deleted = False
+            
+            # Method 1: Click the three-dots menu and then the Delete button as shown in screenshot
+            try:
+                # Find the conversation options button with complete attributes from the provided HTML
+                print("Looking for options button with complete attributes...")
+                
+                # Try exact selector with SVG path for the triple dot button
+                options_xpath = (
+                    '//button[@type="button" and @aria-label="Open conversation options" and '
+                    '@data-testid="conversation-options-button" and starts-with(@id, "radix-") and '
+                    '@aria-haspopup="menu" and contains(@class, "text-token-text-secondary") and '
+                    'contains(@class, "flex") and contains(@class, "items-center")]'
+                    '[.//svg[@width="24" and @height="24" and @viewBox="0 0 24 24" and contains(@class, "h-[22px]") '
+                    'and contains(@class, "w-[22px]")]]'
+                )
+                
+                options_button = self.driver.find_elements(By.XPATH, options_xpath)
+                
+                # Try finding by the unique SVG path pattern for the three dots
+                if not options_button:
+                    print("Trying SVG path pattern...")
+                    svg_path_xpath = (
+                        '//button[.//svg[.//path[contains(@d, "M12 21") and contains(@d, "M12 14") and contains(@d, "M12 7")]]]'
+                    )
+                    options_button = self.driver.find_elements(By.XPATH, svg_path_xpath)
+                
+                # Basic selector as fallback
+                if not options_button:
+                    print("Trying basic selector...")
+                    options_button = self.driver.find_elements(By.CSS_SELECTOR, 
+                        'button[aria-label="Open conversation options"][data-testid="conversation-options-button"]')
+                
+                # Previous fallbacks
+                if not options_button:
+                    print("Trying previous fallbacks...")
+                    options_button = self.driver.find_elements(By.XPATH, 
+                        '//button[contains(@class, "rounded-full") and .//svg]')
+                    
+                if options_button:
+                    # Click the button to open the dropdown
+                    print(f"Found options button, clicking it...")
+                    options_button[0].click()
+                    print("Clicked the conversation options button")
+                    time.sleep(1)
+                    
+                    # Now find and click the Delete button in the dropdown with trash icon
+                    # Try using relative coordinates to the three-dots button
+                    delete_button_clicked = False
+                    try:
+                        # We already clicked the options button, so try clicking 100px below it
+                        print("Trying to click Delete button using relative coordinates...")
+                        
+                        # Get the location of the options button we just clicked
+                        options_loc = options_button[0].location
+                        options_x = options_loc['x']
+                        options_y = options_loc['y']
+                        
+                        # Click about 100px below the options button where the Delete option should be
+                        delete_x = options_x
+                        delete_y = options_y + 100
+                        
+                        # Click at the calculated position
+                        actions = ActionChains(self.driver)
+                        actions.move_by_offset(delete_x, delete_y).click().perform()
+                        actions.reset_actions()
+                        
+                        print(f"Clicked at position ({delete_x}, {delete_y}) for Delete button")
+                        delete_button_clicked = True
+                        time.sleep(1)
+                    except Exception as coord_err:
+                        print(f"Error clicking at relative coordinates: {coord_err}")
+                        
+                        # Try a few other positions if the first one fails
+                        for y_offset in [80, 120, 140, 160]:
+                            try:
+                                actions = ActionChains(self.driver)
+                                actions.move_to_element(options_button[0]).move_by_offset(0, y_offset).click().perform()
+                                actions.reset_actions()
+                                print(f"Clicked at y-offset {y_offset} from options button")
+                                delete_button_clicked = True
+                                time.sleep(1)
+                                break
+                            except Exception:
+                                continue
+                    
+                    # If coordinate approach didn't work, try selectors
+                    if not delete_button_clicked:
+                        # First try to find by text content
+                        delete_buttons = self.driver.find_elements(By.XPATH, 
+                            '//button[.//div[text()="Delete"]]')
+                        
+                        if not delete_buttons:
+                            # Try a more general XPATH
+                            delete_buttons = self.driver.find_elements(By.XPATH, 
+                                '//button[contains(., "Delete")]')
+                            
+                        if delete_buttons:
+                            print(f"Found Delete button with selector, clicking it...")
+                            delete_buttons[0].click()
+                            delete_button_clicked = True
+                            print("Clicked Delete button")
+                            time.sleep(1)
+                    
+                    # Continue with confirmation dialog if we managed to click delete
+                    if delete_button_clicked:
+                        # Look for the confirmation dialog with "Delete chat?" heading
+                        print("Looking for delete confirmation dialog...")
+                        
+                        # Wait for the dialog to appear
+                        try:
+                            WebDriverWait(self.driver, 3).until(
+                                EC.presence_of_element_located((By.XPATH, '//h2[text()="Delete chat?"]'))
+                            )
+                            print("Delete confirmation dialog appeared")
+                        except TimeoutException:
+                            print("Delete confirmation dialog didn't appear as expected")
+                        
+                        # Try to find the red Delete button in the confirmation dialog using the exact attributes from screenshot
+                        confirm_button = None
+                        
+                        # EXACT selector for the red confirmation button
+                        try:
+                            confirm_button = self.driver.find_element(By.CSS_SELECTOR, 
+                                'button[data-testid="delete-conversation-confirm-button"]')
+                            print("Found confirmation button by data-testid")
+                        except NoSuchElementException:
+                            print("Couldn't find button by data-testid")
+                            
+                        # Try by the div structure containing "Delete" text
+                        if not confirm_button:
+                            try:
+                                confirm_buttons = self.driver.find_elements(By.XPATH, 
+                                    '//button[contains(@class, "btn-danger")]//div[contains(@class, "flex") and contains(@class, "items-center") and contains(@class, "justify-center") and text()="Delete"]')
+                                if confirm_buttons:
+                                    confirm_button = confirm_buttons[0]
+                                    print("Found confirmation button by div structure")
+                            except Exception as e:
+                                print(f"Error finding button by div: {e}")
+                        
+                        # Try other selectors if needed
+                        if not confirm_button:
+                            try:
+                                confirm_buttons = self.driver.find_elements(By.XPATH, 
+                                    '//button[contains(@class, "danger") and .//div[text()="Delete"]]')
+                                if confirm_buttons:
+                                    confirm_button = confirm_buttons[0]
+                                    print("Found confirmation button by class danger and text")
+                            except Exception as e:
+                                print(f"Error finding button by danger class: {e}")
+                        
+                        # Final fallback
+                        if not confirm_button:
+                            try:
+                                confirm_buttons = self.driver.find_elements(By.XPATH, 
+                                    '//button[text()="Delete" or .//div[text()="Delete"]]')
+                                if confirm_buttons:
+                                    # Try to filter to find the one that looks like a danger button (usually red)
+                                    danger_buttons = [b for b in confirm_buttons if 'danger' in b.get_attribute('class') or 'red' in b.get_attribute('class')]
+                                    if danger_buttons:
+                                        confirm_button = danger_buttons[0]
+                                    else:
+                                        confirm_button = confirm_buttons[0]
+                                    print("Found confirmation button by text")
+                            except Exception as e:
+                                print(f"Error finding button by text: {e}")
+                        
+                        if confirm_button:
+                            try:
+                                confirm_button.click()
+                                print("Clicked confirmation button")
+                                time.sleep(2)
+                                deleted = True
+                            except Exception as click_err:
+                                print(f"Error clicking confirmation button: {click_err}")
+                                try:
+                                    # Try JavaScript click if direct click fails
+                                    self.driver.execute_script("arguments[0].click();", confirm_button)
+                                    print("Clicked confirmation button via JavaScript")
+                                    time.sleep(2)
+                                    deleted = True
+                                except Exception as js_err:
+                                    print(f"JavaScript click failed: {js_err}")
+                        else:
+                            print("Could not find confirmation button in the dialog")
+
+            except Exception as e1:
+                print(f"Error using the Delete button: {e1}")
+            
+            # JavaScript method with better targeting of the delete button and confirmation
+            if not deleted:
+                try:
+                    print("Trying JavaScript approach with improved button targeting...")
+                    deleted = self.driver.execute_script("""
+                        // Find and click the three dots menu button
+                        const findAndClickOptionsButton = () => {
+                            // Find SVG with path containing the three dots pattern
+                            const svgPaths = document.querySelectorAll('svg path');
+                            let optionsButton = null;
+                            
+                            for (const path of svgPaths) {
+                                const d = path.getAttribute('d');
+                                if (d && d.includes('M12 21') && d.includes('M12 14') && d.includes('M12 7')) {
+                                    optionsButton = path.closest('button');
+                                    break;
+                                }
+                            }
+                            
+                            if (!optionsButton) {
+                                // Try with aria-label
+                                optionsButton = document.querySelector('button[aria-label="Open conversation options"]');
+                            }
+                            
+                            if (optionsButton) {
+                                console.log("Found options button, clicking it");
+                                optionsButton.click();
+                                return true;
+                            } else {
+                                console.log("Could not find options button");
+                                return false;
+                            }
+                        };
+                        
+                        // Find and click the Delete button in the dropdown
+                        const findAndClickDeleteButton = () => {
+                            console.log("Trying to click Delete button relative to options button");
+                            
+                            try {
+                                // Get position of the menu that opened
+                                const menu = document.querySelector('[role="menu"]');
+                                if (menu) {
+                                    // Find all menu items
+                                    const menuItems = menu.querySelectorAll('button');
+                                    
+                                    // Look for the delete button
+                                    for (const item of menuItems) {
+                                        if (item.textContent.includes('Delete')) {
+                                            console.log("Found Delete button in menu");
+                                            item.click();
+                                            return true;
+                                        }
+                                    }
+                                            
+                                    // If we found the menu but not the delete button,
+                                    // click the last item (usually delete is at the bottom)
+                                    if (menuItems.length > 0) {
+                                        console.log("Clicking last menu item (likely Delete)");
+                                        menuItems[menuItems.length - 1].click();
+                                        return true;
+                                    }
+                                }
+                                
+                                // If no menu found, try simulating a click at a position below the options button
+                                console.log("No menu found, trying direct click at relative position");
+                                
+                                // Create and dispatch a click event at a position below the options button
+                                const clickAt = (x, y) => {
+                                    const clickEvent = new MouseEvent('click', {
+                                        view: window,
+                                        bubbles: true,
+                                        cancelable: true,
+                                        clientX: x,
+                                        clientY: y
+                                    });
+                                    
+                                    document.elementFromPoint(x, y).dispatchEvent(clickEvent);
+                                };
+                                
+                                // Try a few positions
+                                const menuPositions = [80, 100, 120, 140];
+                                for (const yOffset of menuPositions) {
+                                    // Find menu button element that was clicked
+                                    const menuButton = document.querySelector('button[aria-expanded="true"][aria-controls^="radix-"]');
+                                    if (menuButton) {
+                                        const rect = menuButton.getBoundingClientRect();
+                                        const x = rect.left + rect.width/2;
+                                        const y = rect.bottom + yOffset;
+                                        
+                                        console.log(`Clicking at relative position y+${yOffset}`);
+                                        clickAt(x, y);
+                                        return true;
+                                    }
+                                }
+                                
+                                return false;
+                            } catch (e) {
+                                console.log("Error in findAndClickDeleteButton: " + e);
+                                return false;
+                            }
+                        };
+                        
+                        // Find and click the confirmation Delete button
+                        const findAndClickConfirmButton = () => {
+                            // Look for the confirmation dialog
+                            const dialog = document.querySelector('h2');
+                            if (!dialog || dialog.textContent !== 'Delete chat?') {
+                                console.log("Dialog not found or not a delete confirmation");
+                                return false;
+                            }
+                            
+                            console.log("Found delete confirmation dialog");
+                            
+                            // Try to find the red delete button with data-testid
+                            let confirmButton = document.querySelector('button[data-testid="delete-conversation-confirm-button"]');
+                            
+                            if (!confirmButton) {
+                                // Try with the class attributes
+                                const buttonDivs = document.querySelectorAll('div.flex.items-center.justify-center');
+                                for (const div of buttonDivs) {
+                                    if (div.textContent.trim() === 'Delete') {
+                                        const button = div.closest('button');
+                                        if (button && (button.classList.contains('btn-danger') || 
+                                                       window.getComputedStyle(button).backgroundColor.includes('rgb(239'))) {
+                                            confirmButton = button;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            if (!confirmButton) {
+                                // Try more generic approach - find all buttons and look for the one that's red
+                                const allButtons = document.querySelectorAll('button');
+                                for (const btn of allButtons) {
+                                    const style = window.getComputedStyle(btn);
+                                    if (btn.textContent.includes('Delete') && 
+                                        !btn.textContent.includes('Cancel') &&
+                                        (style.backgroundColor.includes('rgb(239') || 
+                                         style.color.includes('rgb(239'))) {
+                                        confirmButton = btn;
+                                        break;
+                                    }
+                                }
+                            }
+                            
+                            if (confirmButton) {
+                                console.log("Found confirm button, clicking it");
+                                confirmButton.click();
+                                return true;
+                            } else {
+                                console.log("Could not find confirmation button");
+                                return false;
+                            }
+                        };
+                        
+                        // Execute the full deletion sequence with proper timing
+                        return new Promise((resolve) => {
+                            // Step 1: Click the options button
+                            if (findAndClickOptionsButton()) {
+                                // Step 2: Wait and click Delete button
+                                setTimeout(() => {
+                                    if (findAndClickDeleteButton()) {
+                                        // Step 3: Wait and click confirmation button
+                                        setTimeout(() => {
+                                            if (findAndClickConfirmButton()) {
+                                                resolve(true);
+                                            } else {
+                                                resolve(false);
+                                            }
+                                        }, 1000);
+                                    } else {
+                                        resolve(false);
+                                    }
+                                }, 1000);
+                            } else {
+                                resolve(false);
+                            }
+                        });
+                    """)
+                    
+                    if deleted:
+                        print("Successfully deleted chat via JavaScript")
+                        time.sleep(3)  # Wait longer to ensure deletion completes
+                    else:
+                        print("JavaScript approach did not complete deletion")
+                        
+                except Exception as e2:
+                    print(f"Error with JavaScript delete: {e2}")
+            
+            # Fallback methods from before if delete doesn't work
+            if not deleted:
+                # Method 3: Look for "New chat" button
+                try:
+                    new_chat_buttons = self.driver.find_elements(By.XPATH, 
+                        '//a[contains(@href, "/chat") and contains(., "New chat")]')
+                    
+                    if new_chat_buttons:
+                        new_chat_buttons[0].click()
+                        print("Clicked 'New chat' button (fallback)")
+                        time.sleep(2)
+                        deleted = True
+                except Exception as e3:
+                    print(f"Error finding New chat button: {e3}")
+                
+                # Method 4: Navigate directly to a new chat as a final fallback
+                if not deleted:
+                    try:
+                        self.driver.get(self.config["chatgpt_url"] + "/chat")
+                        print("Navigated to new chat URL (final fallback)")
+                        time.sleep(3)
+                        deleted = True
+                    except Exception as e4:
+                        print(f"Error navigating to new chat: {e4}")
+            
+            if not deleted:
+                print("Could not delete or clear chat, will try again on next processing")
+                
+        except Exception as clear_err:
+            print(f"Error deleting chat: {clear_err}")
+            # Continue anyway, don't fail the processing
         
         return success
     

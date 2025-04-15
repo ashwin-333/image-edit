@@ -257,8 +257,20 @@ class EmuGPTProcessor:
         with open(prompt_file, 'r') as f:
             prompt = f.read().strip()
         
-        # Add instruction to keep aspect ratio
-        prompt += " Keep the aspect ratio and size of the output image the same as the input image."
+        # Get input image dimensions for more specific instruction
+        try:
+            from PIL import Image
+            img = Image.open(input_image)
+            img_width, img_height = img.size
+            aspect_ratio = img_width / img_height
+            
+            # Add enhanced instruction with exact dimensions
+            prompt += f" CRITICAL: Generate the output with EXACTLY the same dimensions ({img_width}x{img_height} pixels) and aspect ratio ({aspect_ratio:.2f}) as the input image. Do not crop or change proportions."
+            
+        except Exception as img_error:
+            print(f"Error getting image dimensions: {img_error}")
+            # Fallback to simpler instruction
+            prompt += " Keep the aspect ratio and size of the output image the same as the input image."
         
         print(f"Prompt: {prompt}")
         print(f"Input image: {input_image}")
@@ -1500,6 +1512,10 @@ class EmuGPTProcessor:
                                     for chunk in response.iter_content(1024):
                                         file.write(chunk)
                                 print(f"Downloaded image to {output_file}")
+                                
+                                # Resize the output to match input dimensions
+                                input_image = os.path.join(directory_path, "input.jpg")
+                                self.resize_output_to_match_input(input_image, output_file)
                                 return True
                         except Exception as download_err:
                             print(f"Error downloading image: {download_err}")
@@ -1508,6 +1524,10 @@ class EmuGPTProcessor:
                     output_file = os.path.join(directory_path, "output.png")
                     generated_images[0].screenshot(output_file)
                     print(f"Image saved to {output_file} (via alt attribute)")
+                    
+                    # Resize the output to match input dimensions
+                    input_image = os.path.join(directory_path, "input.jpg")
+                    self.resize_output_to_match_input(input_image, output_file)
                     return True
                 except Exception as e1:
                     print(f"Error capturing image with alt='Generated image': {str(e1)}")
@@ -1544,6 +1564,10 @@ class EmuGPTProcessor:
                                             for chunk in response.iter_content(1024):
                                                 file.write(chunk)
                                         print(f"Downloaded first (left) image to {output_file}")
+                                        
+                                        # Resize the output to match input dimensions
+                                        input_image = os.path.join(directory_path, "input.jpg")
+                                        self.resize_output_to_match_input(input_image, output_file)
                                         return True
                                 except Exception as download_err:
                                     print(f"Error downloading image: {download_err}")
@@ -1554,6 +1578,10 @@ class EmuGPTProcessor:
                             output_file = os.path.join(directory_path, "output.png")
                             img_element.screenshot(output_file)
                             print(f"Saved first (left) image to {output_file}")
+                            
+                            # Resize the output to match input dimensions
+                            input_image = os.path.join(directory_path, "input.jpg")
+                            self.resize_output_to_match_input(input_image, output_file)
                             return True
             except Exception as multi_err:
                 print(f"Error checking for multiple image scenario: {multi_err}")
@@ -1578,6 +1606,10 @@ class EmuGPTProcessor:
                                         for chunk in response.iter_content(1024):
                                             file.write(chunk)
                                         print(f"Downloaded image to {output_file}")
+                                        
+                                        # Resize the output to match input dimensions
+                                        input_image = os.path.join(directory_path, "input.jpg")
+                                        self.resize_output_to_match_input(input_image, output_file)
                                         return True
                             except Exception as download_err:
                                 print(f"Error downloading image: {download_err}")
@@ -1588,13 +1620,81 @@ class EmuGPTProcessor:
                         output_file = os.path.join(directory_path, "output.png")
                         img.screenshot(output_file)
                         print(f"Image saved to {output_file} (via oaiusercontent.com)")
+                        
+                        # Resize the output to match input dimensions
+                        input_image = os.path.join(directory_path, "input.jpg")
+                        self.resize_output_to_match_input(input_image, output_file)
                         return True
                 except Exception as e2:
                     continue
             
-            # Continue with the rest of the existing methods...
-            # (Rest of the method remains unchanged)
-        
+            # PRIORITY 4: Look for any visible img tags with reasonable size
+            print("Looking for any visible image of reasonable size...")
+            for img in all_images:
+                try:
+                    # Skip tiny icons, spacers, etc.
+                    width = img.get_attribute('width')
+                    height = img.get_attribute('height')
+                    
+                    if width and height:
+                        # Convert attributes to integers
+                        try:
+                            width_int = int(width)
+                            height_int = int(height)
+                            
+                            # Only consider reasonably sized images (at least 200x200)
+                            if width_int >= 200 and height_int >= 200:
+                                print(f"Found reasonably sized image: {width_int}x{height_int}")
+                                
+                                # Try to take screenshot of this image
+                                self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", img)
+                                time.sleep(1)
+                                output_file = os.path.join(directory_path, "output.png")
+                                img.screenshot(output_file)
+                                print(f"Image saved to {output_file} (via size filtering)")
+                                
+                                # Resize the output to match input dimensions
+                                input_image = os.path.join(directory_path, "input.jpg")
+                                self.resize_output_to_match_input(input_image, output_file)
+                                return True
+                        except ValueError:
+                            # Not numeric width/height, skip
+                            continue
+                except Exception as e3:
+                    continue
+            
+            # If we got here, we couldn't find any image with our specific approaches
+            # Take a full screenshot as fallback
+            print("No specific image found, taking full screenshot")
+            output_file = os.path.join(directory_path, "output.png")
+            self.driver.save_screenshot(output_file)
+            print(f"Full screenshot saved to {output_file}")
+            
+            # Try to look for images in the saved screenshot and crop out the largest one
+            try:
+                from PIL import Image
+                import numpy as np
+                from PIL import ImageFile
+                ImageFile.LOAD_TRUNCATED_IMAGES = True
+                
+                screenshot = Image.open(output_file)
+                
+                # Create and save original screenshot as a separate file
+                screenshot_path = os.path.join(directory_path, "full_screenshot.png")
+                screenshot.save(screenshot_path)
+                print(f"Full screenshot copied to {screenshot_path}")
+                
+                # Resize the output to match input dimensions
+                input_image = os.path.join(directory_path, "input.jpg")
+                self.resize_output_to_match_input(input_image, output_file)
+                return True
+            except Exception as pil_err:
+                print(f"Error processing screenshot: {pil_err}")
+            
+            # Final fallback - if we reach here, we couldn't find or process any image
+            print("Could not locate any generated image with certainty")
+            return False
+            
         except Exception as e:
             print(f"Error in find_and_save_generated_image: {str(e)}")
             traceback.print_exc()
@@ -1608,7 +1708,16 @@ class EmuGPTProcessor:
             # Create blank output.png as placeholder
             try:
                 from PIL import Image
-                blank_img = Image.new('RGB', (512, 512), color='white')
+                input_image = os.path.join(directory_path, "input.jpg")
+                if os.path.exists(input_image):
+                    # Create blank image with same dimensions as input
+                    input_img = Image.open(input_image)
+                    width, height = input_img.size
+                    blank_img = Image.new('RGB', (width, height), color='white')
+                else:
+                    # Default size if no input image
+                    blank_img = Image.new('RGB', (512, 512), color='white')
+                
                 blank_img.save(os.path.join(directory_path, "output.png"))
                 print("Created blank placeholder image on error")
             except:
@@ -1814,8 +1923,20 @@ class EmuGPTProcessor:
                         with open(prompt_file, 'r') as f:
                             prompt = f.read().strip()
                         
-                        # Add instruction to keep aspect ratio
-                        prompt += " Keep the aspect ratio and size of the output image the same as the input image."
+                        # Get input image dimensions for more specific instruction
+                        try:
+                            from PIL import Image
+                            img = Image.open(input_image)
+                            img_width, img_height = img.size
+                            aspect_ratio = img_width / img_height
+                            
+                            # Add enhanced instruction with exact dimensions
+                            prompt += f" CRITICAL: Generate the output with EXACTLY the same dimensions ({img_width}x{img_height} pixels) and aspect ratio ({aspect_ratio:.2f}) as the input image. Do not crop or change proportions."
+                            
+                        except Exception as img_error:
+                            print(f"Browser {worker_id}: Error getting image dimensions: {img_error}")
+                            # Fallback to simpler instruction
+                            prompt += " Keep the aspect ratio and size of the output image the same as the input image."
                         
                         print(f"Browser {worker_id}: Starting to process {dir_name}")
                         print(f"Browser {worker_id}: Prompt: {prompt}")
@@ -2839,6 +2960,50 @@ class EmuGPTProcessor:
                     pass
                     
             print(f"Worker {worker_id}: Cleanup complete")
+
+    # Add this function to resize images after the find_and_save_generated_image method
+    def resize_output_to_match_input(self, input_path, output_path):
+        """Resize output image to match input dimensions exactly"""
+        try:
+            from PIL import Image
+            import os
+            
+            # Check if both files exist
+            if not (os.path.exists(input_path) and os.path.exists(output_path)):
+                print(f"Cannot resize: Missing input or output file")
+                return False
+                
+            # Open images
+            input_img = Image.open(input_path)
+            output_img = Image.open(output_path)
+            
+            # Get input dimensions
+            input_width, input_height = input_img.size
+            output_width, output_height = output_img.size
+            
+            # Save original output before resizing
+            output_dir = os.path.dirname(output_path)
+            output_filename = os.path.basename(output_path)
+            output_name, output_ext = os.path.splitext(output_filename)
+            original_output_path = os.path.join(output_dir, f"{output_name}_original{output_ext}")
+            
+            # Save a copy of the original output
+            output_img.save(original_output_path)
+            print(f"Saved original output as {original_output_path}")
+            
+            # Log dimensions
+            print(f"Resizing output from {output_width}x{output_height} to match input {input_width}x{input_height}")
+            
+            # Resize to match input dimensions
+            resized_output = output_img.resize((input_width, input_height), Image.LANCZOS)
+            
+            # Save the resized image
+            resized_output.save(output_path)
+            print(f"Successfully resized output image to match input dimensions")
+            return True
+        except Exception as e:
+            print(f"Error resizing image: {e}")
+            return False
 
 
 def main():

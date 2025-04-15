@@ -47,7 +47,8 @@ class EmuGPTProcessor:
             "total_time": 0
         }
         self.driver = None
-        self.user_profile = os.path.join(os.path.expanduser("~"), "chrome_chatgpt_profile")
+        # Use the specific Chrome profile path
+        self.user_profile = "/Users/tejas/chrome_chatgpt_profile_20250414_214423"
     
     def load_config(self, config_path):
         """Load configuration from file"""
@@ -304,23 +305,130 @@ class EmuGPTProcessor:
                 # Use selector-based approach (original code)
                 try:
                     # Look for attachment button and click it
-                    print("Looking for attachment button...")
-                    attachment_buttons = self.driver.find_elements(By.CSS_SELECTOR, 'button[aria-label="Attach files"]')
+                    print("Looking for the + button for attachment...")
                     
-                    if not attachment_buttons:
-                        attachment_buttons = self.driver.find_elements(By.XPATH, '//button[contains(@aria-label, "Attach")]')
+                    # Wait for the page to fully load
+                    time.sleep(5)
                     
-                    if attachment_buttons:
-                        attachment_buttons[0].click()
-                        print("Clicked attachment button")
+                    # Try to find the + button directly
+                    plus_button = None
+                    
+                    # Attempt 1: Try finding button with the exact + character
+                    plus_buttons = self.driver.find_elements(By.XPATH, '//button[normalize-space(.)="+"]')
+                    if plus_buttons:
+                        plus_button = plus_buttons[0]
+                        print("Found + button by exact text")
+                    
+                    # Attempt 2: Try finding by looking at the first button in the toolbar
+                    if not plus_button:
+                        toolbar_buttons = self.driver.find_elements(By.CSS_SELECTOR, '.flex.items-center button')
+                        if toolbar_buttons and len(toolbar_buttons) > 0:
+                            plus_button = toolbar_buttons[0]  # First button is usually +
+                            print("Found first button in toolbar")
+                    
+                    # Attempt 3: Try by data-testid if available
+                    if not plus_button:
+                        data_test_buttons = self.driver.find_elements(By.CSS_SELECTOR, '[data-testid="chat-composer-add-button"]')
+                        if data_test_buttons:
+                            plus_button = data_test_buttons[0]
+                            print("Found + button by data-testid")
+                    
+                    # Click the + button if found
+                    if plus_button:
+                        try:
+                            # Scroll to make it visible
+                            self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", plus_button)
+                            time.sleep(1)
+                            
+                            # Try clicking with JavaScript
+                            self.driver.execute_script("arguments[0].click();", plus_button)
+                            print("Clicked + button")
+                        except Exception as click_error:
+                            print(f"Error clicking with JavaScript: {click_error}")
+                            try:
+                                # Try the regular click
+                                plus_button.click()
+                                print("Clicked + button regularly")
+                            except Exception as direct_click_error:
+                                print(f"Error with direct click too: {direct_click_error}")
+                                print("Falling back to coordinates approach")
+                                raise Exception("Could not click the + button")
                     else:
-                        print("Attachment button not found automatically")
-                        manual_click = input("Please click the attachment button manually, then type 'done': ").strip().lower()
+                        print("+ button not found by any selector")
+                        
+                        # Take a screenshot to help debug
+                        debug_screenshot = os.path.join(directory_path, "debug_screenshot.png")
+                        self.driver.save_screenshot(debug_screenshot)
+                        print(f"Saved debug screenshot to {debug_screenshot}")
+                        
+                        # Try to click at the UPDATED coordinates of the + button from the new screenshot
+                        try:
+                            # Updated coordinates based on the new screenshot
+                            x, y = 420, 380  # Approximate coordinates for the + button in the toolbar
+                            self.click_at_coordinates(x, y, "+ button")
+                            print("Clicked at coordinates of + button")
+                            time.sleep(2)  # Wait longer after coordinate click
+                        except Exception as coord_error:
+                            print(f"Error clicking at coordinates: {coord_error}")
+                            
+                            # Try several positions if first one fails
+                            for x_offset in [-10, 0, 10, 20]:
+                                for y_offset in [-10, 0, 10]:
+                                    try:
+                                        new_x, new_y = 420 + x_offset, 380 + y_offset
+                                        print(f"Trying alternate coordinates: ({new_x}, {new_y})")
+                                        self.click_at_coordinates(new_x, new_y, "alternate + button position")
+                                        time.sleep(1)
+                                    except:
+                                        continue
+                        
+                        manual_click = input("Please click the + button manually, then type 'done': ").strip().lower()
                         if manual_click != 'done':
                             print("Aborting this directory.")
                             return False
                     
-                    time.sleep(1)
+                    # Give the dropdown menu time to appear
+                    time.sleep(2)
+                    
+                    # Look for the "Upload file" option in the dropdown menu
+                    upload_option_found = False
+                    
+                    # Try multiple selectors for the upload option
+                    upload_selectors = [
+                        '//*[contains(text(), "Upload") and contains(text(), "file")]',
+                        '//*[contains(text(), "Upload")]',
+                        '//*[contains(@aria-label, "upload")]',
+                        '//*[contains(@role, "menuitem") and contains(., "Upload")]'
+                    ]
+                    
+                    for selector in upload_selectors:
+                        try:
+                            upload_options = self.driver.find_elements(By.XPATH, selector)
+                            if upload_options and len(upload_options) > 0:
+                                # Scroll to the upload option
+                                self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", upload_options[0])
+                                time.sleep(0.5)
+                                
+                                # Click the upload option
+                                self.driver.execute_script("arguments[0].click();", upload_options[0])
+                                print(f"Clicked upload option using selector: {selector}")
+                                upload_option_found = True
+                                time.sleep(1)
+                                break
+                        except:
+                            continue
+                    
+                    # If no upload option found, try clicking near where it should be
+                    if not upload_option_found:
+                        try:
+                            # Try clicking where the "Upload file" option typically appears
+                            # These coordinates are relative to the + button
+                            upload_x, upload_y = 450, 410
+                            self.click_at_coordinates(upload_x, upload_y, "Upload file option")
+                            print("Tried clicking at upload option coordinates")
+                            time.sleep(1)
+                        except Exception as upload_coord_error:
+                            print(f"Error clicking at upload coordinates: {upload_coord_error}")
                     
                     # Now find the file input and send the file path
                     file_inputs = self.driver.find_elements(By.CSS_SELECTOR, 'input[type="file"]')
@@ -329,16 +437,24 @@ class EmuGPTProcessor:
                         file_inputs[0].send_keys(os.path.abspath(input_image))
                         print("Image uploaded")
                     else:
-                        print("File input not found")
-                        manual_upload = input("Please upload the image manually, then type 'done': ").strip().lower()
-                        if manual_upload != 'done':
-                            print("Aborting this directory.")
-                            return False
+                        # Try again after a delay - sometimes file input appears later
+                        time.sleep(2)
+                        file_inputs = self.driver.find_elements(By.CSS_SELECTOR, 'input[type="file"]')
+                        if file_inputs:
+                            file_inputs[0].send_keys(os.path.abspath(input_image))
+                            print("Image uploaded on second attempt")
+                        else:
+                            print("File input not found")
+                            manual_upload = input("Please upload the image manually, then type 'done': ").strip().lower()
+                            if manual_upload != 'done':
+                                print("Aborting this directory.")
+                                return False
                     
                     time.sleep(2)
                     
                 except Exception as e:
                     print(f"Error during file upload: {str(e)}")
+                    traceback.print_exc()
                     manual_upload = input("Error occurred. Did you upload the image manually? (y/n): ").strip().lower()
                     if manual_upload not in ['y', 'yes']:
                         print("Aborting this directory.")
@@ -346,24 +462,128 @@ class EmuGPTProcessor:
                 
                 # Enter prompt
                 try:
-                    textareas = self.driver.find_elements(By.CSS_SELECTOR, 'textarea[placeholder="Message ChatGPT…"]')
+                    print("Looking for textarea to enter prompt...")
                     
+                    # Wait for the textarea to be ready after image upload
+                    time.sleep(3)
+                    
+                    # Try multiple approaches to find the textarea
+                    textarea = None
+                    
+                    # Approach 1: Standard placeholder selector
+                    textareas = self.driver.find_elements(By.CSS_SELECTOR, 'textarea[placeholder="Message ChatGPT…"]')
                     if textareas:
                         textarea = textareas[0]
-                        textarea.clear()
-                        textarea.send_keys(prompt)
-                        print("Prompt entered")
-                        textarea.send_keys(Keys.RETURN)
-                        print("Message sent, waiting for response...")
+                        print("Found textarea by placeholder")
+                    
+                    # Approach 2: Try with a more general textarea selector
+                    if not textarea:
+                        textareas = self.driver.find_elements(By.CSS_SELECTOR, 'textarea[placeholder*="Message"]')
+                        if textareas:
+                            textarea = textareas[0]
+                            print("Found textarea by partial placeholder")
+                    
+                    # Approach 3: Try with data-testid
+                    if not textarea:
+                        textareas = self.driver.find_elements(By.CSS_SELECTOR, '[data-testid="chat-composer-textarea"] textarea')
+                        if textareas:
+                            textarea = textareas[0]
+                            print("Found textarea by data-testid")
+                    
+                    # Approach 4: Try any textarea
+                    if not textarea:
+                        textareas = self.driver.find_elements(By.TAG_NAME, 'textarea')
+                        if textareas:
+                            # Try to find visible textareas
+                            for text_area in textareas:
+                                if text_area.is_displayed():
+                                    textarea = text_area
+                                    print("Found visible textarea")
+                                    break
+                    
+                    # Try to enter text if textarea found
+                    if textarea:
+                        try:
+                            # Scroll to make the textarea visible
+                            self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", textarea)
+                            time.sleep(1)
+                            
+                            # First try to focus and clear any existing text
+                            self.driver.execute_script("arguments[0].focus();", textarea)
+                            self.driver.execute_script("arguments[0].value = '';", textarea)
+                            time.sleep(0.5)
+                            
+                            # Method 1: Standard send_keys
+                            textarea.send_keys(prompt)
+                            print("Entered prompt via send_keys")
+                            
+                            # Wait a moment before pressing Enter
+                            time.sleep(1)
+                            textarea.send_keys(Keys.RETURN)
+                            print("Message sent, waiting for response...")
+                        except Exception as text_error:
+                            print(f"Error with standard input: {text_error}")
+                            try:
+                                # Method 2: Use JavaScript to set value and dispatch events
+                                self.driver.execute_script("""
+                                    arguments[0].value = arguments[1];
+                                    arguments[0].dispatchEvent(new Event('input', { bubbles: true }));
+                                    arguments[0].dispatchEvent(new Event('change', { bubbles: true }));
+                                """, textarea, prompt)
+                                time.sleep(1)
+                                
+                                # Try to send Enter via JavaScript
+                                self.driver.execute_script("""
+                                    var keyEvent = new KeyboardEvent('keydown', {
+                                        'key': 'Enter',
+                                        'code': 'Enter',
+                                        'keyCode': 13,
+                                        'bubbles': true
+                                    });
+                                    arguments[0].dispatchEvent(keyEvent);
+                                """, textarea)
+                                print("Entered prompt and sent via JavaScript")
+                            except Exception as js_error:
+                                print(f"Error with JavaScript input: {js_error}")
+                                # Method 3: Try Action Chains
+                                try:
+                                    actions = ActionChains(self.driver)
+                                    actions.move_to_element(textarea).click().send_keys(prompt).send_keys(Keys.RETURN).perform()
+                                    print("Entered prompt via Action Chains")
+                                except Exception as action_error:
+                                    print(f"Error with Action Chains: {action_error}")
+                                    raise Exception("Could not enter text using any method")
                     else:
-                        print("Textarea not found automatically")
-                        manual_prompt = input("Please enter the prompt manually and press Enter, then type 'done': ").strip().lower()
-                        if manual_prompt != 'done':
-                            print("Aborting this directory.")
-                            return False
+                        print("Textarea not found by any selector")
+                        
+                        # Take a screenshot to help debug
+                        debug_screenshot = os.path.join(directory_path, "debug_textarea.png")
+                        self.driver.save_screenshot(debug_screenshot)
+                        print(f"Saved debug screenshot to {debug_screenshot}")
+                        
+                        # Try clicking where textarea should be and entering text
+                        try:
+                            # Approximate coordinates for textarea in the chat interface
+                            textarea_x, textarea_y = 640, 650
+                            self.click_at_coordinates(textarea_x, textarea_y, "textarea area")
+                            time.sleep(1)
+                            
+                            # Send text using Action Chains since we don't have an element
+                            actions = ActionChains(self.driver)
+                            actions.send_keys(prompt).send_keys(Keys.RETURN).perform()
+                            print("Tried entering text at coordinates")
+                        except Exception as coord_text_error:
+                            print(f"Error entering text at coordinates: {coord_text_error}")
+                            
+                            # Ask for manual intervention
+                            manual_prompt = input("Please enter the prompt manually and press Enter, then type 'done': ").strip().lower()
+                            if manual_prompt != 'done':
+                                print("Aborting this directory.")
+                                return False
                     
                 except Exception as e:
                     print(f"Error entering prompt: {str(e)}")
+                    traceback.print_exc()
                     manual_prompt = input("Error occurred. Did you enter the prompt manually? (y/n): ").strip().lower()
                     if manual_prompt not in ['y', 'yes']:
                         print("Aborting this directory.")
@@ -371,7 +591,77 @@ class EmuGPTProcessor:
             
             # Wait for response
             print("Waiting for response...")
-            manual_response = input(f"Wait {self.config['image_gen_wait_time']} seconds, then press Enter when ChatGPT has fully generated a response with image: ")
+            
+            # Wait longer for image generation
+            wait_time = self.config['image_gen_wait_time']
+            print(f"Waiting {wait_time} seconds for image generation to complete...")
+            
+            # Since image generation can take time, implement a better waiting approach
+            start_wait = time.time()
+            image_found = False
+            
+            # Keep checking for the generated image while waiting
+            while time.time() - start_wait < wait_time and not image_found:
+                try:
+                    # Check if any images have appeared in the response
+                    images = self.driver.find_elements(By.CSS_SELECTOR, 'img:not([alt="User"])') 
+                    
+                    # Find images in the response area (not the user's uploaded image)
+                    response_images = []
+                    
+                    # Get all messages/blocks in the conversation
+                    message_blocks = self.driver.find_elements(By.CSS_SELECTOR, '.w-full.text-token-text-primary')
+                    
+                    if message_blocks and len(message_blocks) >= 2:
+                        # Last message block should be the assistant's response
+                        last_block = message_blocks[-1]
+                        
+                        # Try to find images within this response block
+                        response_images = last_block.find_elements(By.TAG_NAME, 'img')
+                        
+                        if response_images:
+                            print(f"Found {len(response_images)} images in the latest response")
+                            image_found = True
+                            break
+                    
+                    # If no images found in message blocks, try broader search
+                    if not image_found and images and len(images) >= 2:
+                        # First image is usually the user's uploaded one, so look at the rest
+                        for i, img in enumerate(images):
+                            if i == 0:
+                                continue  # Skip the first image (likely user's upload)
+                                
+                            # Check if it's a generated image
+                            src = img.get_attribute('src')
+                            if src and ('blob:' in src or 'data:' in src or 'openai' in src):
+                                response_images.append(img)
+                                image_found = True
+                                break
+                    
+                    # If still no images found, but we see a loading indicator, keep waiting
+                    if not image_found:
+                        loading_indicators = self.driver.find_elements(By.CSS_SELECTOR, '.animate-spin')
+                        if loading_indicators and any(indicator.is_displayed() for indicator in loading_indicators):
+                            print("Generation in progress, still waiting...")
+                            time.sleep(2)
+                            continue
+                        
+                except Exception as e:
+                    print(f"Error while checking for images: {e}")
+                
+                # Wait a bit before checking again
+                time.sleep(2)
+                
+                # Print progress updates every 10 seconds
+                elapsed = time.time() - start_wait
+                if int(elapsed) % 10 == 0 and int(elapsed) > 0:
+                    print(f"Still waiting... {int(elapsed)}/{wait_time} seconds elapsed")
+            
+            manual_response = input("Has ChatGPT fully generated a response with image? (y/n): ").strip().lower()
+            if manual_response not in ['y', 'yes']:
+                # Give more time if the user says generation isn't complete
+                print("Waiting for additional time...")
+                time.sleep(10)
             
             # Capture the result
             if use_coordinates:
@@ -385,127 +675,45 @@ class EmuGPTProcessor:
                     success = True
                 else:
                     print("Failed to capture image with coordinates")
+                    # Try to find and save the image using selectors
+                    success = self.find_and_save_generated_image(directory_path)
+            else:
+                # Try to find and save the generated image using selectors
+                success = self.find_and_save_generated_image(directory_path)
+                
+                if not success:
+                    print("Could not save the image automatically, taking full screenshot")
                     full_screenshot_path = os.path.join(directory_path, "output_full.png")
                     self.driver.save_screenshot(full_screenshot_path)
                     print(f"Saved full screenshot to {full_screenshot_path}")
                     success = True
-                
-                # Try to get the response text (still using selectors as this is text)
-                try:
-                    response_elements = self.driver.find_elements(By.CSS_SELECTOR, '.markdown')
-                    if response_elements:
-                        response_text = response_elements[-1].text
-                        output_txt = os.path.join(directory_path, "output.txt")
-                        with open(output_txt, 'w') as f:
-                            f.write(response_text)
-                        print(f"Response saved to {output_txt}")
-                    else:
-                        print("Could not find response text automatically")
-                        manual_text = input("Please copy the response text and paste it here (press Enter to skip): ")
-                        if manual_text.strip():
-                            output_txt = os.path.join(directory_path, "output.txt")
-                            with open(output_txt, 'w') as f:
-                                f.write(manual_text)
-                            print(f"Response text saved manually to {output_txt}")
-                except Exception as e:
-                    print(f"Error capturing response text: {str(e)}")
-                    manual_text = input("Error occurred. Please copy the response text and paste it here (press Enter to skip): ")
+            
+            # Try to get the response text (still using selectors as this is text)
+            try:
+                response_elements = self.driver.find_elements(By.CSS_SELECTOR, '.markdown')
+                if response_elements:
+                    response_text = response_elements[-1].text
+                    output_txt = os.path.join(directory_path, "output.txt")
+                    with open(output_txt, 'w') as f:
+                        f.write(response_text)
+                    print(f"Response saved to {output_txt}")
+                else:
+                    print("Could not find response text automatically")
+                    manual_text = input("Please copy the response text and paste it here (press Enter to skip): ")
                     if manual_text.strip():
                         output_txt = os.path.join(directory_path, "output.txt")
                         with open(output_txt, 'w') as f:
                             f.write(manual_text)
                         print(f"Response text saved manually to {output_txt}")
-                        
-            else:
-                # Use selector-based approach (original code)
-                try:
-                    # Look for the generated image
-                    print("Looking for generated images...")
-                    images = self.driver.find_elements(By.CSS_SELECTOR, 'img')
+            except Exception as e:
+                print(f"Error capturing response text: {str(e)}")
+                manual_text = input("Error occurred. Please copy the response text and paste it here (press Enter to skip): ")
+                if manual_text.strip():
+                    output_txt = os.path.join(directory_path, "output.txt")
+                    with open(output_txt, 'w') as f:
+                        f.write(manual_text)
+                    print(f"Response text saved manually to {output_txt}")
                     
-                    if len(images) < 2:
-                        print("Not enough images found")
-                        manual_image_found = input("Do you see a generated image? (y/n): ").strip().lower()
-                        if manual_image_found not in ['y', 'yes']:
-                            print("No images found, skipping image capture")
-                        else:
-                            print("Taking a screenshot of the whole page instead...")
-                            output_file = os.path.join(directory_path, "output_full.png")
-                            self.driver.save_screenshot(output_file)
-                            print(f"Full screenshot saved to {output_file}")
-                            success = True
-                    else:
-                        # Skip the first image (usually the user uploaded one)
-                        for i, img in enumerate(images):
-                            if i == 0:  # Skip the first image (user uploaded)
-                                continue
-                                
-                            try:
-                                # Scroll to the image
-                                self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", img)
-                                time.sleep(1)
-                                
-                                # Take screenshot of the image
-                                output_file = os.path.join(directory_path, "output.png")
-                                img.screenshot(output_file)
-                                print(f"Image saved to {output_file}")
-                                
-                                # We found a valid image
-                                success = True
-                                break
-                            except Exception as e:
-                                print(f"Error capturing image {i}: {str(e)}")
-                                continue
-                    
-                    # Try to get the response text
-                    try:
-                        response_elements = self.driver.find_elements(By.CSS_SELECTOR, '.markdown')
-                        if response_elements:
-                            response_text = response_elements[-1].text
-                            output_txt = os.path.join(directory_path, "output.txt")
-                            with open(output_txt, 'w') as f:
-                                f.write(response_text)
-                            print(f"Response saved to {output_txt}")
-                            
-                            # If we saved the text but not the image, still count as partial success
-                            if not success:
-                                print("Warning: Saved text but could not save image")
-                                success = True
-                        else:
-                            print("Could not find response text automatically")
-                            manual_text = input("Please copy the response text and paste it here (press Enter to skip): ")
-                            if manual_text.strip():
-                                output_txt = os.path.join(directory_path, "output.txt")
-                                with open(output_txt, 'w') as f:
-                                    f.write(manual_text)
-                                print(f"Response text saved manually to {output_txt}")
-                                success = True
-                                
-                    except Exception as e:
-                        print(f"Error capturing response text: {str(e)}")
-                        manual_text = input("Error occurred. Please copy the response text and paste it here (press Enter to skip): ")
-                        if manual_text.strip():
-                            output_txt = os.path.join(directory_path, "output.txt")
-                            with open(output_txt, 'w') as f:
-                                f.write(manual_text)
-                            print(f"Response text saved manually to {output_txt}")
-                            success = True
-                    
-                except Exception as e:
-                    print(f"Error capturing response: {str(e)}")
-                    traceback.print_exc()
-                    
-                    # Ask for manual intervention
-                    manual_save = input("Would you like to manually save the output? (y/n): ").strip().lower()
-                    if manual_save in ['y', 'yes']:
-                        manual_text = input("Please copy the response text and paste it here (press Enter to skip): ")
-                        if manual_text.strip():
-                            output_txt = os.path.join(directory_path, "output.txt")
-                            with open(output_txt, 'w') as f:
-                                f.write(manual_text)
-                            print(f"Response text saved manually to {output_txt}")
-                            success = True
-            
         except Exception as e:
             print(f"Error processing {dir_name}: {str(e)}")
             traceback.print_exc()
@@ -664,6 +872,158 @@ class EmuGPTProcessor:
         self.save_stats()
         
         return self.stats["successful"] > 0
+
+    def test_browser(self):
+        """Test browser functionality and responsiveness"""
+        print("\nRunning browser test...")
+        
+        try:
+            # 1. Test navigation to Google (a simple site)
+            print("Testing navigation to Google...")
+            self.driver.get("https://www.google.com")
+            time.sleep(3)
+            
+            # 2. Test basic interaction
+            print("Testing basic interaction...")
+            search_box = self.driver.find_elements(By.NAME, "q")
+            if search_box:
+                print("  ✓ Found search box")
+                search_box[0].send_keys("Test")
+                time.sleep(1)
+                search_box[0].clear()
+                print("  ✓ Interaction successful")
+            else:
+                print("  ✗ Could not find search box")
+                
+            # 3. Test JavaScript execution
+            print("Testing JavaScript execution...")
+            user_agent = self.driver.execute_script("return navigator.userAgent")
+            print(f"  ✓ User Agent: {user_agent}")
+            
+            # 4. Test browser state
+            print("Browser information:")
+            print(f"  - Window size: {self.driver.get_window_size()}")
+            
+            print("\nBrowser test completed.")
+            print("If all tests passed but ChatGPT site is still unresponsive:")
+            print("1. Try with a completely new Chrome profile")
+            print("2. Make sure Chrome is up to date")
+            print("3. OpenAI might be blocking automated access")
+            print("4. Try the --use_coordinates option for alternative interaction method\n")
+            
+            return True
+        except Exception as e:
+            print(f"Error during browser test: {str(e)}")
+            traceback.print_exc()
+            return False
+
+    def find_and_save_generated_image(self, directory_path):
+        """Find and save the generated image from ChatGPT's response"""
+        print("Searching for generated image...")
+        
+        try:
+            # Different strategies to find the generated image
+            # 1. Look for images in the assistant's response block
+            message_blocks = self.driver.find_elements(By.CSS_SELECTOR, '.w-full.text-token-text-primary')
+            if message_blocks and len(message_blocks) >= 2:
+                last_block = message_blocks[-1]  # The last block is likely the assistant's response
+                images = last_block.find_elements(By.TAG_NAME, 'img')
+                
+                if images:
+                    # Try to take a screenshot of the first image in the response
+                    try:
+                        # Scroll to the image
+                        self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", images[0])
+                        time.sleep(1)
+                        
+                        # Take screenshot of the image
+                        output_file = os.path.join(directory_path, "output.png")
+                        images[0].screenshot(output_file)
+                        print(f"Image saved to {output_file} (method 1)")
+                        return True
+                    except Exception as e1:
+                        print(f"Error capturing image with method 1: {str(e1)}")
+            
+            # 2. Look for all images and try to find the generated one
+            all_images = self.driver.find_elements(By.CSS_SELECTOR, 'img')
+            if len(all_images) >= 2:  # At least 2 images (user uploaded + generated)
+                # Skip the first image (usually the user uploaded one)
+                for i, img in enumerate(all_images):
+                    if i == 0:  # Skip the first image (user uploaded)
+                        continue
+                        
+                    try:
+                        # Check if it's likely a generated image
+                        src = img.get_attribute('src')
+                        if not src or 'avatar' in src.lower():
+                            continue  # Skip profile avatars
+                            
+                        # Make sure the image is visible and has reasonable size
+                        size = img.size
+                        if size['width'] < 100 or size['height'] < 100:
+                            continue  # Too small to be a generated image
+                            
+                        # Scroll to the image
+                        self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", img)
+                        time.sleep(1)
+                        
+                        # Take screenshot of the image
+                        output_file = os.path.join(directory_path, "output.png")
+                        img.screenshot(output_file)
+                        print(f"Image saved to {output_file} (method 2)")
+                        return True
+                    except Exception as e2:
+                        print(f"Error capturing image {i} with method 2: {str(e2)}")
+            
+            # 3. Try using parent containers that might contain images
+            image_containers = self.driver.find_elements(By.CSS_SELECTOR, '.flex.justify-center')
+            for container in image_containers:
+                try:
+                    images = container.find_elements(By.TAG_NAME, 'img')
+                    if images:
+                        self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", images[0])
+                        time.sleep(1)
+                        
+                        output_file = os.path.join(directory_path, "output.png")
+                        images[0].screenshot(output_file)
+                        print(f"Image saved to {output_file} (method 3)")
+                        return True
+                except Exception as e3:
+                    print(f"Error with container method: {str(e3)}")
+            
+            # 4. Try to find image download button and get the URL
+            download_buttons = self.driver.find_elements(By.XPATH, 
+                '//button[contains(@aria-label, "Download") or contains(., "Download")]')
+            
+            if download_buttons:
+                try:
+                    # Try to get the image URL from the download button
+                    button = download_buttons[0]
+                    parent = button
+                    
+                    # Try to navigate up to find an image
+                    for _ in range(5):  # Look up to 5 levels up
+                        try:
+                            parent = parent.find_element(By.XPATH, '..')
+                            images = parent.find_elements(By.TAG_NAME, 'img')
+                            if images:
+                                output_file = os.path.join(directory_path, "output.png")
+                                images[0].screenshot(output_file)
+                                print(f"Image saved to {output_file} (method 4)")
+                                return True
+                        except:
+                            break
+                            
+                except Exception as e4:
+                    print(f"Error with download button method: {str(e4)}")
+            
+            print("Could not find and save the generated image with any method")
+            return False
+            
+        except Exception as e:
+            print(f"Error in find_and_save_generated_image: {str(e)}")
+            traceback.print_exc()
+            return False
 
 
 def main():

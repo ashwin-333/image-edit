@@ -257,6 +257,9 @@ class EmuGPTProcessor:
         with open(prompt_file, 'r') as f:
             prompt = f.read().strip()
         
+        # Add instruction to keep aspect ratio
+        prompt += " Keep the aspect ratio and size of the output image the same as the input image."
+        
         print(f"Prompt: {prompt}")
         print(f"Input image: {input_image}")
         
@@ -1811,6 +1814,9 @@ class EmuGPTProcessor:
                         with open(prompt_file, 'r') as f:
                             prompt = f.read().strip()
                         
+                        # Add instruction to keep aspect ratio
+                        prompt += " Keep the aspect ratio and size of the output image the same as the input image."
+                        
                         print(f"Browser {worker_id}: Starting to process {dir_name}")
                         print(f"Browser {worker_id}: Prompt: {prompt}")
                         
@@ -2582,10 +2588,18 @@ class EmuGPTProcessor:
         # Calculate statistics
         avg_time = 0
         hourly_rate = 0
+        avg_time_per_batch = 0
+        avg_time_per_image = 0
         
         if processing_times and len(processing_times) > 0:
             avg_time = sum(processing_times) / len(processing_times)
             hourly_rate = 3600 / avg_time * self.num_processes if avg_time > 0 else 0
+            
+            # Calculate batch statistics
+            # Assuming each batch processes self.num_processes images in parallel
+            batch_count = max(1, processed // self.num_processes)
+            avg_time_per_batch = total_time / batch_count if batch_count > 0 else 0
+            avg_time_per_image = avg_time_per_batch / self.num_processes if self.num_processes > 0 else 0
         
         # Format time as HH:MM:SS
         hours, remainder = divmod(total_time, 3600)
@@ -2601,9 +2615,11 @@ class EmuGPTProcessor:
             "total_time_seconds": total_time,
             "total_time_formatted": formatted_time,
             "avg_time_per_image_seconds": avg_time,
+            "avg_time_per_batch_seconds": avg_time_per_batch,
+            "avg_time_per_image_in_batch_seconds": avg_time_per_image,
             "images_per_hour": hourly_rate,
             "num_processes": self.num_processes,
-            "num_processing_times_recorded": len(processing_times)
+            "num_processing_times_recorded": len(processing_times) if processing_times else 0
         }
         
         # Save to file
@@ -2611,6 +2627,11 @@ class EmuGPTProcessor:
             with open(stats_file, 'w') as f:
                 json.dump(stats, f, indent=2)
             print(f"Statistics saved to {stats_file}")
+            
+            # Also print the new statistics
+            if avg_time_per_batch > 0:
+                print(f"Average time per batch: {avg_time_per_batch:.2f} seconds")
+                print(f"Average time per image in batch: {avg_time_per_image:.2f} seconds")
         except Exception as e:
             print(f"Error saving statistics: {str(e)}")
             

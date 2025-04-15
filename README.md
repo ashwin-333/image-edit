@@ -1,107 +1,109 @@
-# GPT-ImgEval: Process Emu Dataset with ChatGPT
+# GPT Automation Pipeline
 
-This repository contains a tool to automate processing the Facebook Emu Edit dataset with ChatGPT. It uploads images and prompts from the dataset to ChatGPT and saves the generated output images.
+A powerful automation tool for generating images with ChatGPT's DALLE-3 integration through browser automation.
 
-## Features
+## Overview
 
-- Processes the Emu Edit dataset with ChatGPT
-- Uses undetected-chromedriver to bypass Cloudflare detection
-- Maintains a persistent Chrome profile for authentication
-- Provides a coordinate-based approach for stable UI interaction
-- Saves generated images directly to their source directories
+This tool provides a robust framework for automating browser interactions with ChatGPT to generate images from text prompts. It features:
+
+1. Undetected browser automation to avoid detection mechanisms
+2. Parallel processing with multiple browser instances
+3. Automatic handling of authentication and session management
+4. Comprehensive logging and statistics tracking
+5. Configurable processing options and timeout handling
 
 ## Requirements
 
-- Python 3.7+
-- Chrome browser installed
-- The Emu Edit dataset downloaded
+- Python 3.8+
+- Chrome browser
+- Internet connection with access to chat.openai.com
 
-## Installation
+## Setup
 
-1. Clone this repository:
+1. Clone the repository:
    ```bash
-   git clone <repository-url>
-   cd GPT-ImgEval
+   git clone https://github.com/ashwin-333/image-edit.git
+   cd image-edit
    ```
 
-2. Install dependencies:
+2. Create and activate a virtual environment:
    ```bash
-   pip install undetected-chromedriver selenium pyperclip pillow
+   python -m venv venv
+   source venv/bin/activate  # On Windows: venv\Scripts\activate
    ```
 
-3. Download the Emu Edit dataset (if you haven't already):
+3. Install dependencies:
    ```bash
-   # Option 1: Using the download_emu_dataset.py script (if included)
-   python download_emu_dataset.py
-   
-   # Option 2: Download manually from Hugging Face
-   # Visit https://huggingface.co/datasets/facebook/emu-edit
-   # and download the dataset files
+   pip install undetected-chromedriver selenium pillow
    ```
 
-4. Ensure the dataset is structured as follows:
-   ```
-   emu-dataset/
-   ├── 000001/
-   │   ├── input.jpg
-   │   └── prompt.txt
-   ├── 000002/
-   │   ├── input.jpg
-   │   └── prompt.txt
-   └── ...
-   ```
+## Creating Input Data
+
+The tool expects prompt data organized in directories:
+
+```
+emu-dataset/
+├── 0000/
+│   └── prompts.txt
+│   ├── input.jpg
+├── 0001/
+│   └── prompts.txt
+│   ├── input.jpg
+└── ...
+```
 
 ## Usage
 
-The main script is `undetected_gpt_processor.py`, which provides several modes and options for processing the dataset.
+### Basic Usage
 
-### Calibration Mode
-
-Before running the processor, it's recommended to run the calibration mode to set up the correct UI element coordinates:
+Run the processor directly using:
 
 ```bash
-./undetected_gpt_processor.py --calibrate
+python undetected_gpt_processor.py
 ```
 
-This will:
-1. Open a Chrome browser window
-2. Guide you through logging in to ChatGPT
-3. Help you identify the coordinates of key UI elements
-4. Save these coordinates to a configuration file
+### Parallel Processing (Recommended)
 
-### Running the Processor
-
-After calibration, you can run the processor with:
+For faster generation with multiple browser instances:
 
 ```bash
-./undetected_gpt_processor.py --config calibrated_config.json --use_coordinates --max_dirs 5
+python undetected_gpt_processor.py --parallel --processes 2 --max_dirs 2
 ```
 
-Command-line arguments:
-- `--config <file>`: Path to configuration file (default: none)
-- `--max_dirs <number>`: Maximum number of directories to process (default: process all)
-- `--profile <path>`: Path to Chrome profile directory
-- `--use_coordinates`: Use coordinate-based interaction instead of selectors
-- `--calibrate`: Run calibration mode to identify UI element coordinates
+This will launch 2 parallel Chrome instances, each processing prompts simultaneously, and will process a maximum of 2 images for each browser, so 4 total.
 
-### Example Configuration File
+### Command Line Options
 
-Here's an example of a configuration file (`emu_config.json`):
+```
+--parallel           Enable parallel processing with multiple browser instances
+--processes N        Number of parallel browser instances to use (default: 2)
+--max_dirs N         Maximum number of directories to process (default: all)
+--headless           Run browser in headless mode (hidden)
+--profile PATH       Path to Chrome user profile directory
+--config PATH        Path to custom configuration file
+--output_dir PATH    Directory to save generated images
+--timeout SECONDS    Browser operation timeout in seconds
+```
 
-```json
-{
-  "headless": false,
-  "chatgpt_url": "https://chat.openai.com",
-  "image_gen_wait_time": 60,
-  "max_dirs_to_process": 10,
-  "dataset_dir": "emu-dataset",
-  "browser_profile": "~/chrome_chatgpt_profile",
-  "coordinates": {
-    "attachment_button": {"x": 740, "y": 650},
-    "textarea": {"x": 640, "y": 650},
-    "first_image": {"x": 400, "y": 400},
-    "generated_image": {"x": 400, "y": 500}
-  },
-  "use_coordinates": true
-}
+### First Batch Authentication
+
+On the first batch, you'll need to manually log in to ChatGPT in each of the automated browser windows.
+
+## Output Structure
+
+Generated images and metadata are saved in the output directory:
+
+```
+emu-dataset/
+├── 0000/
+│   └── prompts.txt
+│   ├── input.jpg
+│   ├── output.jpg
+│   ├── output.txt
+├── 0001/
+│   └── prompts.txt
+│   ├── input.jpg
+│   ├── output.jpg
+│   ├── output.txt
+└── ...
 ```

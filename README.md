@@ -1,16 +1,6 @@
 # GPT Automation Pipeline
 
-A powerful automation tool for generating images with ChatGPT's DALLE-3 integration through browser automation.
-
-## Overview
-
-This tool provides a robust framework for automating browser interactions with ChatGPT to generate images from text prompts. It features:
-
-1. Undetected browser automation to avoid detection mechanisms
-2. Parallel processing with multiple browser instances
-3. Automatic handling of authentication and session management
-4. Comprehensive logging and statistics tracking
-5. Configurable processing options and timeout handling
+An automation tool for generating images with ChatGPT's 4o through browser automation.
 
 ## Requirements
 
@@ -37,73 +27,70 @@ This tool provides a robust framework for automating browser interactions with C
    pip install undetected-chromedriver selenium pillow
    ```
 
-## Creating Input Data
+## Input Directory Structure
 
-The tool expects prompt data organized in directories:
+The tool expects data organized in the following structure:
 
 ```
-emu-dataset/
-├── 0000/
-│   └── prompts.txt
-│   ├── input.jpg
-├── 0001/
-│   └── prompts.txt
-│   ├── input.jpg
-└── ...
+inputs/
+├── images/
+│   ├── 0000.png
+│   ├── 0001.png
+│   └── ...
+└── edits/
+    ├── 0000.txt
+    ├── 0001.txt
+    └── ...
 ```
+
+- **images/**: Contains PNG image files with numeric names
+- **edits/**: Contains text files with corresponding prompts
 
 ## Usage
 
-### Basic Usage
-
-Run the processor directly using:
-
-```bash
-python undetected_gpt_processor.py
-```
-
-### Parallel Processing (Recommended)
+### Recommended Usage (Parallel Processing)
 
 For faster generation with multiple browser instances:
 
 ```bash
-python undetected_gpt_processor.py --parallel --processes 2 --max_dirs 2
+python undetected_gpt_processor.py --input_dir inputs --output_dir outputs --parallel --processes 2 --max_dirs 2
 ```
 
-This will launch 2 parallel Chrome instances, each processing prompts simultaneously, and will process a maximum of 2 images for each browser, so 4 total.
+This will:
+- Use the `inputs` directory for source images and prompts
+- Save results to the `outputs` directory
+- Launch 2 parallel Chrome instances, each processing prompts simultaneously
+- Process a maximum of 2 directories per worker (adjust as needed)
 
 ### Command Line Options
 
 ```
+--input_dir PATH     Directory containing 'images' and 'edits' subdirectories
+--output_dir PATH    Directory to save generated images
 --parallel           Enable parallel processing with multiple browser instances
---processes N        Number of parallel browser instances to use (default: 2)
+--processes N        Number of parallel browser instances to use (default: 8)
 --max_dirs N         Maximum number of directories to process (default: all)
---headless           Run browser in headless mode (hidden)
 --profile PATH       Path to Chrome user profile directory
 --config PATH        Path to custom configuration file
---output_dir PATH    Directory to save generated images
---timeout SECONDS    Browser operation timeout in seconds
+--use_coordinates    Use coordinate-based interaction instead of selectors
+--calibrate          Run calibration mode to identify UI element coordinates
 ```
 
-### First Batch Authentication
+### First Run Authentication
 
-On the first batch, you'll need to manually log in to ChatGPT in each of the automated browser windows.
+On the first batch, you'll need to manually log in to ChatGPT in each of the automated browser windows. Once authenticated, the browser will maintain your session for subsequent batches.
 
-## Output Structure
+## Output Directory Structure
 
-Generated images and metadata are saved in the output directory:
+Generated images are saved in the specified output directory:
 
 ```
-emu-dataset/
+outputs/
 ├── 0000/
-│   └── prompts.txt
-│   ├── input.jpg
-│   ├── output.jpg
-│   ├── output.txt
+│   └── 0000.png  # Resized to match input image dimensions
 ├── 0001/
-│   └── prompts.txt
-│   ├── input.jpg
-│   ├── output.jpg
-│   ├── output.txt
+│   └── 0001.png
 └── ...
 ```
+
+The output images are automatically resized to match the dimensions of the corresponding input images, ensuring consistent aspect ratios and sizes.

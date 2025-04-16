@@ -1835,6 +1835,19 @@ class EmuGPTProcessor:
         drivers = []
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
+        # Process statistics
+        processing_times = []
+        processed_count = 0
+        successful_count = 0
+        failed_count = 0
+        
+        # Calculate batch size based on the number of processes
+        total_batches = (len(items_to_process) + self.num_processes - 1) // self.num_processes
+        print(f"Will process {len(items_to_process)} directories in {total_batches} batches of up to {self.num_processes} each")
+        
+        # Set batch cooldown time
+        batch_cooldown_time = 5  # seconds to wait between batches
+        
         for i in range(min(self.num_processes, len(items_to_process))):
             worker_id = i + 1
             print(f"\nInitializing browser {worker_id}/{self.num_processes}...")
@@ -1894,7 +1907,7 @@ class EmuGPTProcessor:
         print("3. Wait for the chat interface to load completely in all windows")
         print("=================================================\n")
         
-        # Wait for manual confirmation that all browsers are logged in
+        # Manual confirmation that all browsers are logged in
         manual_confirm = input("Have you completed login for ALL browser windows? (y/n): ").strip().lower()
         
         if manual_confirm not in ['y', 'yes']:
@@ -1909,11 +1922,8 @@ class EmuGPTProcessor:
         
         print("Login confirmed for all browsers. Starting parallel processing...")
         
-        # Process directories with existing authenticated browsers
-        processing_times = []
-        processed_count = 0
-        successful_count = 0
-        failed_count = 0
+        # Process statistics 
+        overall_start = time.time()
         
         try:
             # Process directories in batches - all browsers working at once
@@ -1927,12 +1937,17 @@ class EmuGPTProcessor:
                 print(f"\n=== Processing batch {batch_idx//self.num_processes + 1} ===")
                 print(f"Starting image generation for {batch_size} directories simultaneously")
                 
+                # Mark batch start for timing
+                batch_start_time = time.time()
+                self._update_results_json("batch_start", 0, is_batch_start=True)
+                
                 # Assign directories to browsers and start processing
                 processing_tasks = []
+                
                 for i in range(batch_size):
                     driver = drivers[i]
                     dir_path = os.path.join(input_dir, batch_items[i])
-                    dir_name = os.path.basename(dir_path)
+                    dir_name = batch_items[i]
                     worker_id = i + 1
                     
                     print(f"Browser {worker_id} assigned to process: {dir_name}")
@@ -2245,6 +2260,9 @@ class EmuGPTProcessor:
                             processing_time = time.time() - task["start_time"]
                             processing_times.append(processing_time)
                             print(f"Browser {worker_id}: Processed {dir_name} in {processing_time:.2f} seconds")
+                            
+                            # Update results JSON with per-image processing time
+                            self._update_results_json(dir_name, processing_time)
 
                             # Don't create output.txt as requested by user
                             
@@ -2686,10 +2704,11 @@ class EmuGPTProcessor:
                         # Continue anyway, don't fail the processing
                 print(f"\nCompleted batch {batch_idx//self.num_processes + 1}: {successful_count}/{batch_size} successful")
                 
-                # Wait briefly before starting next batch
-                if batch_idx + self.num_processes < len(items_to_process):
-                    print("Waiting 5 seconds before starting next batch...")
-                    time.sleep(5)
+                # Mark end of batch for timing
+                self._update_results_json("batch_end", 0, is_batch_end=True)
+                
+                print(f"Waiting {batch_cooldown_time} seconds before starting next batch...")
+                time.sleep(batch_cooldown_time)
         
         except Exception as e:
             print(f"Error during parallel processing: {e}")
@@ -2731,8 +2750,32 @@ class EmuGPTProcessor:
             minutes, seconds = divmod(remainder, 60)
             print(f"Total time: {int(hours)}h {int(minutes)}m {seconds:.2f}s")
         
+        # Process any results from the worker processes
+        try:
+            # Check if there are any results in the queue from worker processes
+            while True:
+                try:
+                    result = result_queue.get(block=False)
+                    
+                    # Check if this is processing time data
+                    if isinstance(result, dict) and "processing_time" in result:
+                        processing_times.append(result["processing_time"])
+                        
+                        # Update per-image results JSON if image name is available
+                        if "image_name" in result:
+                            self._update_results_json(result["image_name"], result["processing_time"])
+                except queue.Empty:
+                    # No more results in the queue
+                    break
+        except Exception as e:
+            print(f"Error processing results: {e}")
+        
         # Save statistics
         stats = self._save_parallel_stats(processed_count, successful_count, failed_count, processing_times, total_time)
+        
+        # Mark end of last processed batch
+        if batch_idx > 0:
+            self._update_results_json("batch_end", 0, is_batch_end=True)
         
         return successful_count > 0
 
@@ -2945,7 +2988,7 @@ class EmuGPTProcessor:
                     if success:
                         with success_counter.get_lock():
                             success_counter.value += 1
-                        result_queue.put({"processing_time": processing_time})
+                        result_queue.put({"processing_time": processing_time, "image_name": basename})
                         print(f"Worker {worker_id}: Successfully processed {basename} in {processing_time:.1f}s")
                     else:
                         with failed_counter.get_lock():
@@ -3033,6 +3076,100 @@ class EmuGPTProcessor:
         except Exception as e:
             print(f"Error resizing image: {e}")
             return False
+
+    def _update_results_json(self, image_name, processing_time, is_batch_start=False, is_batch_end=False):
+        """Update the results JSON file with per-image processing times"""
+        import os
+        import json
+        import time
+        from datetime import datetime
+        
+        # Create results directory if it doesn't exist
+        results_dir = "results"
+        os.makedirs(results_dir, exist_ok=True)
+        
+        # Get timestamp for filename if not already set
+        if not hasattr(self, 'results_timestamp'):
+            self.results_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            
+        # Results file path
+        results_file = os.path.join(results_dir, f"results_{self.results_timestamp}.json")
+        
+        # Initialize the results data structure
+        if not hasattr(self, 'results_data'):
+            self.results_data = {
+                "timestamp": self.results_timestamp,
+                "num_processes": self.num_processes,
+                "images": {},
+                "batches": {},
+                "current_batch": 0,
+                "summary": {
+                    "total_images_processed": 0,
+                    "total_batch_time": 0,
+                    "avg_batch_time": 0,
+                    "effective_time_per_image": 0  # Batch time / num_processes
+                }
+            }
+        
+        # Handle batch tracking
+        now = time.time()
+        if is_batch_start:
+            self.results_data["current_batch"] += 1
+            batch_num = self.results_data["current_batch"]
+            self.results_data["batches"][str(batch_num)] = {
+                "start_time": now,
+                "end_time": None,
+                "duration": None,
+                "images": [],
+                "longest_image_time": 0
+            }
+            
+        # Update the data with new image info
+        current_batch = str(self.results_data["current_batch"])
+        self.results_data["images"][image_name] = {
+            "processing_time": processing_time,
+            "processed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "batch": current_batch
+        }
+        
+        # Add image to current batch
+        if current_batch in self.results_data["batches"]:
+            self.results_data["batches"][current_batch]["images"].append(image_name)
+            # Track the longest processing time in this batch
+            if processing_time > self.results_data["batches"][current_batch]["longest_image_time"]:
+                self.results_data["batches"][current_batch]["longest_image_time"] = processing_time
+        
+        # If this is the end of a batch, update batch timing
+        if is_batch_end:
+            batch_num = self.results_data["current_batch"]
+            if str(batch_num) in self.results_data["batches"]:
+                batch = self.results_data["batches"][str(batch_num)]
+                batch["end_time"] = now
+                if batch["start_time"]:
+                    batch["duration"] = batch["end_time"] - batch["start_time"]
+                    
+                    # Update summary stats
+                    self.results_data["summary"]["total_batch_time"] += batch["duration"]
+                    num_batches = len([b for b in self.results_data["batches"].values() if b["duration"] is not None])
+                    self.results_data["summary"]["avg_batch_time"] = self.results_data["summary"]["total_batch_time"] / num_batches
+        
+        # Update summary stats
+        total_images = len(self.results_data["images"])
+        self.results_data["summary"]["total_images_processed"] = total_images
+        
+        # Calculate effective time per image (total batch time / images processed)
+        # This accounts for parallel processing advantage
+        if self.results_data["summary"]["total_batch_time"] > 0:
+            self.results_data["summary"]["effective_time_per_image"] = (
+                self.results_data["summary"]["total_batch_time"] / total_images
+            )
+        
+        # Write the updated data to file
+        try:
+            with open(results_file, 'w') as f:
+                json.dump(self.results_data, f, indent=4)
+        except Exception as e:
+            print(f"Error updating results JSON: {e}")
 
 
 def main():

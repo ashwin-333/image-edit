@@ -94,3 +94,7 @@ outputs/
 ```
 
 The output images are automatically resized to match the dimensions of the corresponding input images, ensuring consistent aspect ratios and sizes.
+
+## Results
+
+Make a results/ directory in the root of your project, and result jsons for every run (labeled by timestamp) will be stored there.

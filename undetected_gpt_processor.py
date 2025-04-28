@@ -22,6 +22,7 @@ import ctypes
 import random
 import queue
 import multiprocessing as mp
+import tempfile
 
 # Try to import undetected-chromedriver
 try:
@@ -262,15 +263,27 @@ class EmuGPTProcessor:
             from PIL import Image
             img = Image.open(image_path)
             img_width, img_height = img.size
-            aspect_ratio = img_width / img_height
             
-            # Add enhanced instruction with exact dimensions
-            prompt += f" CRITICAL: Generate the output with EXACTLY the same dimensions ({img_width}x{img_height} pixels) and aspect ratio ({aspect_ratio:.2f}) as the input image. Do not crop or change proportions."
+            # Add square output instruction
+            prompt += " Generate a square output image."
+            
+            # Center crop the input image to a square
+            print("Center cropping input image to square...")
+            # Create a temp directory for cropped images if it doesn't exist
+            temp_dir = os.path.join(self.config["output_dir"], "__temp_cropped")
+            os.makedirs(temp_dir, exist_ok=True)
+            
+            # Create a cropped version of the image
+            cropped_image_path = os.path.join(temp_dir, f"{dir_name}_cropped.png")
+            self.center_crop_to_square(image_path, cropped_image_path)
+            
+            # Use the cropped image instead of the original
+            image_path = cropped_image_path
             
         except Exception as img_error:
-            print(f"Error getting image dimensions: {img_error}")
+            print(f"Error processing image: {img_error}")
             # Fallback to simpler instruction
-            prompt += " Keep the aspect ratio and size of the output image the same as the input image."
+            prompt += " Generate a square output image."
         
         print(f"Prompt: {prompt}")
         print(f"Input image: {image_path}")
@@ -1548,8 +1561,7 @@ class EmuGPTProcessor:
                                         file.write(chunk)
                                 print(f"Downloaded image to {output_file}")
                                 
-                                # Resize the output to match input dimensions
-                                self.resize_output_to_match_input(input_image, output_file)
+                                # Don't resize the output image
                                 return True
                         except Exception as download_err:
                             print(f"Error downloading image: {download_err}")
@@ -1559,8 +1571,7 @@ class EmuGPTProcessor:
                     generated_images[0].screenshot(output_file)
                     print(f"Image saved to {output_file} (via alt attribute)")
                     
-                    # Resize the output to match input dimensions
-                    self.resize_output_to_match_input(input_image, output_file)
+                    # Don't resize the output image
                     return True
                 except Exception as e1:
                     print(f"Error capturing image with alt='Generated image': {str(e1)}")
@@ -1598,8 +1609,7 @@ class EmuGPTProcessor:
                                                 file.write(chunk)
                                         print(f"Downloaded first (left) image to {output_file}")
                                         
-                                        # Resize the output to match input dimensions
-                                        self.resize_output_to_match_input(input_image, output_file)
+                                        # Don't resize the output image
                                         return True
                                 except Exception as download_err:
                                     print(f"Error downloading image: {download_err}")
@@ -1611,8 +1621,7 @@ class EmuGPTProcessor:
                             img_element.screenshot(output_file)
                             print(f"Saved first (left) image to {output_file}")
                             
-                            # Resize the output to match input dimensions
-                            self.resize_output_to_match_input(input_image, output_file)
+                            # Don't resize the output image
                             return True
             except Exception as multi_err:
                 print(f"Error checking for multiple image scenario: {multi_err}")
@@ -1638,8 +1647,7 @@ class EmuGPTProcessor:
                                             file.write(chunk)
                                         print(f"Downloaded image to {output_file}")
                                         
-                                        # Resize the output to match input dimensions
-                                        self.resize_output_to_match_input(input_image, output_file)
+                                        # Don't resize the output image
                                         return True
                             except Exception as download_err:
                                 print(f"Error downloading image: {download_err}")
@@ -1651,8 +1659,7 @@ class EmuGPTProcessor:
                         img.screenshot(output_file)
                         print(f"Image saved to {output_file} (via oaiusercontent.com)")
                         
-                        # Resize the output to match input dimensions
-                        self.resize_output_to_match_input(input_image, output_file)
+                        # Don't resize the output image
                         return True
                 except Exception as e2:
                     continue
@@ -1682,8 +1689,7 @@ class EmuGPTProcessor:
                                 img.screenshot(output_file)
                                 print(f"Image saved to {output_file} (via size filtering)")
                                 
-                                # Resize the output to match input dimensions
-                                self.resize_output_to_match_input(input_image, output_file)
+                                # Don't resize the output image
                                 return True
                         except ValueError:
                             # Not numeric width/height, skip
@@ -1712,8 +1718,7 @@ class EmuGPTProcessor:
                 screenshot.save(screenshot_path)
                 print(f"Full screenshot copied to {screenshot_path}")
                 
-                # Resize the output to match input dimensions
-                self.resize_output_to_match_input(input_image, output_file)
+                # Don't resize the output image
                 return True
             except Exception as pil_err:
                 print(f"Error processing screenshot: {pil_err}")
@@ -1983,15 +1988,27 @@ class EmuGPTProcessor:
                             from PIL import Image
                             img = Image.open(input_image)
                             img_width, img_height = img.size
-                            aspect_ratio = img_width / img_height
                             
-                            # Add enhanced instruction with exact dimensions
-                            prompt += f" CRITICAL: Generate the output with EXACTLY the same dimensions ({img_width}x{img_height} pixels) and aspect ratio ({aspect_ratio:.2f}) as the input image. Do not crop or change proportions."
+                            # Add square output instruction
+                            prompt += " Generate a square output image."
+                            
+                            # Center crop the input image to a square
+                            print(f"Browser {worker_id}: Center cropping input image to square...")
+                            # Create a temp directory for cropped images if it doesn't exist
+                            temp_dir = os.path.join(self.config["output_dir"], "__temp_cropped")
+                            os.makedirs(temp_dir, exist_ok=True)
+                            
+                            # Create a cropped version of the image
+                            cropped_image_path = os.path.join(temp_dir, f"{dir_name}_cropped_{worker_id}.png")
+                            self.center_crop_to_square(input_image, cropped_image_path)
+                            
+                            # Use the cropped image instead of the original
+                            input_image = cropped_image_path
                             
                         except Exception as img_error:
-                            print(f"Browser {worker_id}: Error getting image dimensions: {img_error}")
+                            print(f"Browser {worker_id}: Error processing image: {img_error}")
                             # Fallback to simpler instruction
-                            prompt += " Keep the aspect ratio and size of the output image the same as the input image."
+                            prompt += " Generate a square output image."
                         
                         print(f"Browser {worker_id}: Starting to process {dir_name}")
                         print(f"Browser {worker_id}: Prompt: {prompt}")
@@ -3077,6 +3094,55 @@ class EmuGPTProcessor:
             print(f"Error resizing image: {e}")
             return False
 
+    # Add this function to center crop images to square
+    def center_crop_to_square(self, input_path, output_path=None):
+        """Center crop input image to square based on min(width, height)"""
+        try:
+            from PIL import Image
+            import os
+            
+            # Open the image
+            img = Image.open(input_path)
+            
+            # Get dimensions
+            width, height = img.size
+            
+            # Determine the size of the square crop (min dimension)
+            crop_size = min(width, height)
+            
+            # Calculate crop box (left, upper, right, lower)
+            left = (width - crop_size) // 2
+            upper = (height - crop_size) // 2
+            right = left + crop_size
+            lower = upper + crop_size
+            
+            # Crop the image
+            cropped_img = img.crop((left, upper, right, lower))
+            
+            # If output_path is provided, save to that path
+            if output_path:
+                cropped_img.save(output_path)
+                print(f"Center cropped image saved to {output_path}")
+                return output_path
+            else:
+                # Otherwise return the cropped image object
+                return cropped_img
+                
+        except Exception as e:
+            print(f"Error cropping image to square: {e}")
+            return None
+    
+    def is_image_square(self, image_path):
+        """Check if an image is square (width == height)"""
+        try:
+            from PIL import Image
+            img = Image.open(image_path)
+            width, height = img.size
+            return width == height
+        except Exception as e:
+            print(f"Error checking if image is square: {e}")
+            return False
+
     def _update_results_json(self, image_name, processing_time, is_batch_start=False, is_batch_end=False):
         """Update the results JSON file with per-image processing times"""
         import os
@@ -3107,9 +3173,15 @@ class EmuGPTProcessor:
                     "total_images_processed": 0,
                     "total_batch_time": 0,
                     "avg_batch_time": 0,
-                    "effective_time_per_image": 0  # Batch time / num_processes
+                    "effective_time_per_image": 0,  # Batch time / num_processes
+                    "square_images": 0,  # Track square images
+                    "non_square_images": 0  # Track non-square images
                 }
             }
+        # Make sure square_images and non_square_images are initialized if they don't exist
+        elif "square_images" not in self.results_data["summary"]:
+            self.results_data["summary"]["square_images"] = 0
+            self.results_data["summary"]["non_square_images"] = 0
         
         # Handle batch tracking
         now = time.time()
@@ -3126,10 +3198,27 @@ class EmuGPTProcessor:
             
         # Update the data with new image info
         current_batch = str(self.results_data["current_batch"])
+        
+        # Check if this is a regular image (not batch markers)
+        is_square = False
+        if not is_batch_start and not is_batch_end and image_name not in ["batch_start", "batch_end"]:
+            # Check if output image exists and if it's square
+            output_dir = os.path.join(self.config["output_dir"], image_name)
+            output_png = os.path.join(output_dir, f"{image_name}.png")
+            if os.path.exists(output_png):
+                is_square = self.is_image_square(output_png)
+                
+                # Update square/non-square count in summary
+                if is_square:
+                    self.results_data["summary"]["square_images"] += 1
+                else:
+                    self.results_data["summary"]["non_square_images"] += 1
+        
         self.results_data["images"][image_name] = {
             "processing_time": processing_time,
             "processed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "batch": current_batch
+            "batch": current_batch,
+            "is_square": is_square
         }
         
         # Add image to current batch
@@ -3154,15 +3243,34 @@ class EmuGPTProcessor:
                     self.results_data["summary"]["avg_batch_time"] = self.results_data["summary"]["total_batch_time"] / num_batches
         
         # Update summary stats
-        total_images = len(self.results_data["images"])
+        total_images = len([img for img in self.results_data["images"] if img not in ["batch_start", "batch_end"]])
         self.results_data["summary"]["total_images_processed"] = total_images
         
         # Calculate effective time per image (total batch time / images processed)
         # This accounts for parallel processing advantage
-        if self.results_data["summary"]["total_batch_time"] > 0:
+        if self.results_data["summary"]["total_batch_time"] > 0 and total_images > 0:
             self.results_data["summary"]["effective_time_per_image"] = (
                 self.results_data["summary"]["total_batch_time"] / total_images
             )
+        
+        # Create a square image stats summary JSON
+        square_stats_file = os.path.join(results_dir, f"square_stats_{self.results_timestamp}.json")
+        square_stats = {
+            "timestamp": self.results_timestamp,
+            "total_images": total_images,
+            "square_images": self.results_data["summary"]["square_images"],
+            "non_square_images": self.results_data["summary"]["non_square_images"],
+            "square_percentage": 0
+        }
+        
+        if total_images > 0:
+            square_stats["square_percentage"] = (square_stats["square_images"] / total_images) * 100
+            
+        try:
+            with open(square_stats_file, 'w') as f:
+                json.dump(square_stats, f, indent=4)
+        except Exception as e:
+            print(f"Error writing square stats JSON: {e}")
         
         # Write the updated data to file
         try:
@@ -3176,12 +3284,12 @@ def main():
     """Main entry point"""
     parser = argparse.ArgumentParser(description="ChatGPT Automation for Emu Dataset using undetected-chromedriver")
     parser.add_argument("--config", type=str, help="Path to configuration file")
-    parser.add_argument("--max_dirs", type=int, default=0, help="Maximum number of directories to process (per worker in parallel mode)")
+    parser.add_argument("--max_dirs", type=int, default=650, help="Maximum number of directories to process (per worker in parallel mode)")
     parser.add_argument("--profile", type=str, help="Path to Chrome profile directory")
     parser.add_argument("--use_coordinates", action="store_true", help="Use coordinate-based interaction instead of selectors")
     parser.add_argument("--calibrate", action="store_true", help="Run calibration mode to identify UI element coordinates")
     parser.add_argument("--parallel", action="store_true", help="Use parallel processing with multiple workers")
-    parser.add_argument("--processes", type=int, default=8, help="Number of parallel processes to use")
+    parser.add_argument("--processes", type=int, default=3, help="Number of parallel processes to use")
     parser.add_argument("--input_dir", type=str, help="Input directory containing 'images' and 'prompts' subdirectories")
     parser.add_argument("--output_dir", type=str, help="Output directory for generated images")
     
